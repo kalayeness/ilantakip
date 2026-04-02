@@ -161,12 +161,17 @@ def parse_row(row) -> dict | None:
     date_elem = row.find("td", {"class": re.compile(r"searchResultsDateValue|date")})
     date = date_elem.get_text(strip=True) if date_elem else ""
 
+    # Açıklama snippet'i (arama sonuçlarında varsa)
+    desc_elem = row.find("td", {"class": re.compile(r"searchResultsTagAttributeValue|description|snippet")})
+    description = desc_elem.get_text(" ", strip=True) if desc_elem else ""
+
     if not title and not listing_url:
         return None
 
     return {
         "id": str(listing_id),
         "title": title or "Başlık yok",
+        "description": description,
         "price": price,
         "location": location,
         "url": listing_url,
@@ -199,8 +204,8 @@ def apply_local_filters(
         if keyword_list:
             filtered = []
             for listing in result:
-                title_lower = listing["title"].lower()
-                if any(kw in title_lower for kw in keyword_list):
+                search_text = (listing["title"] + " " + listing.get("description", "")).lower()
+                if any(kw in search_text for kw in keyword_list):
                     filtered.append(listing)
             result = filtered
 
