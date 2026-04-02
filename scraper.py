@@ -61,12 +61,11 @@ def make_page_url(base_url: str, offset: int, page_size: int = 20) -> str:
     return urlunparse(parsed._replace(query=new_query))
 
 
-def fetch_listings(url: str, max_pages: int = 3) -> list[dict]:
+def fetch_listings(url: str, max_pages: int = 5, page_size: int = 50) -> list[dict]:
     """Sahibinden.com'dan birden fazla sayfa ilanı çek."""
     base_url = normalize_url(url)
     headers = random.choice(HEADERS_LIST)
     all_listings = []
-    page_size = 20
 
     try:
         session = requests.Session()

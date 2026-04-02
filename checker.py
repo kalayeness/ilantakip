@@ -18,7 +18,7 @@ async def check_filter(filter_record: dict) -> list[dict]:
     logger.info(f"Filtre kontrol ediliyor: '{filter_name}' (ID: {filter_id})")
 
     # Mevcut ilanları çek (tüm sayfalar)
-    current_listings = fetch_listings(url, max_pages=config.MAX_PAGES)
+    current_listings = fetch_listings(url, max_pages=config.MAX_PAGES, page_size=config.PAGE_SIZE)
     if not current_listings:
         logger.info(f"Filtre '{filter_name}': İlan listesi alınamadı veya boş.")
         return []
