@@ -20,7 +20,7 @@ def init_firebase():
         _firebase_initialized = True
         logger.info("Firebase başlatıldı.")
     else:
-        logger.warning(f"Firebase credentials bulunamadı: {cred_path}")
+        logger.info("Firebase credentials yok, push bildirimleri devre dışı. (Local test modunda normal)")
 
 
 def send_push(fcm_token: str, title: str, body: str, data: dict | None = None) -> bool:
