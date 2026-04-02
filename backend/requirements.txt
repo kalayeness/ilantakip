@@ -14,7 +14,7 @@ redis==5.1.1
 firebase-admin==6.5.0; sys_platform != "win32"
 python-jose==3.3.0
 passlib==1.7.4
-bcrypt==4.2.0
+bcrypt==4.0.1
 python-multipart==0.0.12
 apscheduler==3.10.4
 fake-useragent==1.4.0
