@@ -174,6 +174,55 @@ def parse_row(row) -> dict | None:
     }
 
 
+def parse_price_value(price_str: str) -> int | None:
+    """Fiyat metninden sayısal değer çıkar. '34.500 TL' → 34500"""
+    digits = re.sub(r"[^\d]", "", price_str)
+    return int(digits) if digits else None
+
+
+def apply_local_filters(
+    listings: list[dict],
+    keywords: str = "",
+    min_price: int | None = None,
+    max_price: int | None = None,
+) -> list[dict]:
+    """
+    İlanları anahtar kelime ve fiyat filtrelerine göre filtrele.
+    keywords: virgülle ayrılmış kelimeler (örn: 'gök mavisi, uzay grisi')
+    Kelimelerden EN AZ BİRİ başlıkta geçiyorsa ilan dahil edilir.
+    """
+    result = listings
+
+    # Anahtar kelime filtresi
+    if keywords and keywords.strip():
+        keyword_list = [k.strip().lower() for k in keywords.split(",") if k.strip()]
+        if keyword_list:
+            filtered = []
+            for listing in result:
+                title_lower = listing["title"].lower()
+                if any(kw in title_lower for kw in keyword_list):
+                    filtered.append(listing)
+            result = filtered
+
+    # Fiyat filtresi
+    if min_price is not None or max_price is not None:
+        filtered = []
+        for listing in result:
+            price_val = parse_price_value(listing["price"])
+            if price_val is None:
+                # Fiyatı çözülemeyenleri dahil et
+                filtered.append(listing)
+                continue
+            if min_price is not None and price_val < min_price:
+                continue
+            if max_price is not None and price_val > max_price:
+                continue
+            filtered.append(listing)
+        result = filtered
+
+    return result
+
+
 def format_listing_message(listing: dict, filter_name: str) -> str:
     """İlan bilgisini Telegram mesajı formatına çevir."""
     lines = [

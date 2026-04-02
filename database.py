@@ -12,10 +12,24 @@ async def init_db():
                 user_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
                 url TEXT NOT NULL,
+                keywords TEXT DEFAULT '',
+                min_price INTEGER DEFAULT NULL,
+                max_price INTEGER DEFAULT NULL,
                 active INTEGER DEFAULT 1,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Mevcut DB'ye yeni sütunlar ekle (migration)
+        for col, definition in [
+            ("keywords", "TEXT DEFAULT ''"),
+            ("min_price", "INTEGER DEFAULT NULL"),
+            ("max_price", "INTEGER DEFAULT NULL"),
+        ]:
+            try:
+                await db.execute(f"ALTER TABLE filters ADD COLUMN {col} {definition}")
+            except Exception:
+                pass  # Sütun zaten varsa geç
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS seen_listings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,11 +67,18 @@ async def upsert_user(user_id: int, username: str, first_name: str):
         await db.commit()
 
 
-async def add_filter(user_id: int, name: str, url: str) -> int:
+async def add_filter(
+    user_id: int,
+    name: str,
+    url: str,
+    keywords: str = "",
+    min_price: int | None = None,
+    max_price: int | None = None,
+) -> int:
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cursor = await db.execute(
-            "INSERT INTO filters (user_id, name, url) VALUES (?, ?, ?)",
-            (user_id, name, url)
+            "INSERT INTO filters (user_id, name, url, keywords, min_price, max_price) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, name, url, keywords, min_price, max_price)
         )
         await db.commit()
         return cursor.lastrowid

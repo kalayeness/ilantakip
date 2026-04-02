@@ -1,6 +1,6 @@
 import logging
 from database import get_all_active_filters, get_seen_listing_ids, mark_listings_seen
-from scraper import fetch_listings, format_listing_message
+from scraper import fetch_listings, format_listing_message, apply_local_filters
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,12 @@ async def check_filter(filter_record: dict) -> list[dict]:
     if not current_listings:
         logger.info(f"Filtre '{filter_name}': İlan listesi alınamadı veya boş.")
         return []
+
+    # Local filtreler uygula (anahtar kelime + fiyat)
+    keywords = filter_record.get("keywords") or ""
+    min_price = filter_record.get("min_price")
+    max_price = filter_record.get("max_price")
+    current_listings = apply_local_filters(current_listings, keywords, min_price, max_price)
 
     # Daha önce görülen ilanları al
     seen_ids = await get_seen_listing_ids(filter_id)

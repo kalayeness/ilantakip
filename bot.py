@@ -18,6 +18,7 @@ from database import (
     init_db, upsert_user, add_filter, get_filters,
     remove_filter, toggle_notifications,
 )
+from scraper import parse_price_value
 from checker import run_all_checks
 from scraper import validate_sahibinden_url
 
@@ -28,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Konuşma durumları
-WAITING_FILTER_NAME, WAITING_FILTER_URL = range(2)
+WAITING_FILTER_NAME, WAITING_FILTER_URL, WAITING_FILTER_KEYWORDS, WAITING_FILTER_PRICE = range(4)
 
 # Geçici kullanıcı verisi
 user_states: dict[int, dict] = {}
@@ -114,19 +115,84 @@ async def filtre_url_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return WAITING_FILTER_URL
 
-    name = user_states[user_id]["name"]
-    await upsert_user(user_id, update.effective_user.username or "", update.effective_user.first_name or "")
-    filter_id = await add_filter(user_id, name, url)
-
-    user_states.pop(user_id, None)
-
+    user_states[user_id]["url"] = url
     await update.message.reply_text(
-        f"✅ *Filtre eklendi!*\n\n"
-        f"📌 İsim: {name}\n"
-        f"🔗 URL: `{url[:80]}{'...' if len(url) > 80 else ''}`\n\n"
-        f"Bot artık her {config.CHECK_INTERVAL_MINUTES} dakikada bir bu filtreyi kontrol edecek.",
+        "🎨 *Anahtar kelime filtresi* _(isteğe bağlı)_\n\n"
+        "İlan başlığında aranacak kelimeleri virgülle yaz:\n"
+        "_(örn: `gök mavisi, uzay grisi, silver`)_\n\n"
+        "Atlamak için `-` yaz veya `/atla` kullan.",
         parse_mode="Markdown",
     )
+    return WAITING_FILTER_KEYWORDS
+
+
+async def filtre_keywords_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    keywords = "" if text in ("-", "/atla") else text
+    user_states[user_id]["keywords"] = keywords
+
+    await update.message.reply_text(
+        "💰 *Fiyat filtresi* _(isteğe bağlı)_\n\n"
+        "Fiyat aralığını belirt:\n"
+        "• Sadece maksimum: `35000`\n"
+        "• Aralık: `10000-35000`\n\n"
+        "Atlamak için `-` yaz veya `/atla` kullan.",
+        parse_mode="Markdown",
+    )
+    return WAITING_FILTER_PRICE
+
+
+async def filtre_price_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    min_price = None
+    max_price = None
+
+    if text not in ("-", "/atla"):
+        if "-" in text:
+            parts = text.split("-", 1)
+            min_price = parse_price_value(parts[0]) if parts[0].strip() else None
+            max_price = parse_price_value(parts[1]) if parts[1].strip() else None
+        else:
+            max_price = parse_price_value(text)
+
+        if text not in ("-", "/atla") and min_price is None and max_price is None:
+            await update.message.reply_text(
+                "❌ Geçersiz fiyat formatı. Örnekler: `35000` veya `10000-35000`\n"
+                "Atlamak için `-` yaz.",
+                parse_mode="Markdown",
+            )
+            return WAITING_FILTER_PRICE
+
+    user_id_val = update.effective_user.id
+    await upsert_user(user_id_val, update.effective_user.username or "", update.effective_user.first_name or "")
+
+    state = user_states[user_id]
+    filter_id = await add_filter(
+        user_id_val,
+        state["name"],
+        state["url"],
+        keywords=state.get("keywords", ""),
+        min_price=min_price,
+        max_price=max_price,
+    )
+    user_states.pop(user_id, None)
+
+    # Özet mesajı
+    lines = [
+        "✅ *Filtre eklendi!*\n",
+        f"📌 İsim: {state['name']}",
+        f"🔗 URL: `{state['url'][:70]}{'...' if len(state['url']) > 70 else ''}`",
+    ]
+    if state.get("keywords"):
+        lines.append(f"🎨 Kelimeler: `{state['keywords']}`")
+    if min_price or max_price:
+        fiyat_str = f"{min_price or 0:,} - {max_price:,} TL" if max_price else f"{min_price:,}+ TL"
+        lines.append(f"💰 Fiyat: {fiyat_str}")
+    lines.append(f"\nBot her {config.CHECK_INTERVAL_MINUTES} dakikada bir kontrol edecek.")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     return ConversationHandler.END
 
 
@@ -152,7 +218,18 @@ async def filtrelerim(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [f"📋 *Aktif Filtreler ({len(filters_list)} adet):*\n"]
     for f in filters_list:
         url_short = f['url'][:60] + "..." if len(f['url']) > 60 else f['url']
-        lines.append(f"*{f['id']}* — {f['name']}\n`{url_short}`\n")
+        entry = f"*{f['id']}* — {f['name']}\n`{url_short}`"
+        if f.get("keywords"):
+            entry += f"\n🎨 Kelimeler: `{f['keywords']}`"
+        if f.get("min_price") or f.get("max_price"):
+            mn, mx = f.get("min_price"), f.get("max_price")
+            if mn and mx:
+                entry += f"\n💰 Fiyat: {mn:,} - {mx:,} TL"
+            elif mx:
+                entry += f"\n💰 Max fiyat: {mx:,} TL"
+            elif mn:
+                entry += f"\n💰 Min fiyat: {mn:,} TL"
+        lines.append(entry + "\n")
 
     await update.message.reply_text(
         "\n".join(lines),
@@ -287,6 +364,14 @@ async def run_bot():
             ],
             WAITING_FILTER_URL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, filtre_url_al)
+            ],
+            WAITING_FILTER_KEYWORDS: [
+                CommandHandler("atla", filtre_keywords_al),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, filtre_keywords_al)
+            ],
+            WAITING_FILTER_PRICE: [
+                CommandHandler("atla", filtre_price_al),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, filtre_price_al)
             ],
         },
         fallbacks=[CommandHandler("iptal", filtre_ekle_iptal)],
