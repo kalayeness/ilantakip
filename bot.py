@@ -46,6 +46,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📋 *Komutlar:*\n"
         f"/filtre\\_ekle — Yeni arama filtresi ekle\n"
         f"/filtrelerim — Aktif filtrelerini listele\n"
+        f"/filtre\\_detay — Filtre detayını gör (tam URL, kelimeler, fiyat)\n"
         f"/filtre\\_sil — Filtre sil\n"
         f"/simdi\\_kontrol — Hemen kontrol et\n"
         f"/bildirimleri\\_durdur — Bildirimleri durdur\n"
@@ -237,7 +238,54 @@ async def filtrelerim(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def filtre_sil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def filtre_detay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    filters_list = await get_filters(user_id)
+
+    if not filters_list:
+        await update.message.reply_text("📭 Aktif filtren yok.")
+        return
+
+    # Argüman verilmişse o filtreyi göster, yoksa hepsini listele
+    args = context.args
+    if args:
+        try:
+            filter_id = int(args[0])
+            target = next((f for f in filters_list if f["id"] == filter_id), None)
+            if not target:
+                await update.message.reply_text(f"❌ ID {filter_id} bulunamadı.")
+                return
+            targets = [target]
+        except ValueError:
+            await update.message.reply_text("❌ Kullanım: /filtre\\_detay <id>", parse_mode="Markdown")
+            return
+    else:
+        targets = filters_list
+
+    for f in targets:
+        mn, mx = f.get("min_price"), f.get("max_price")
+        if mn and mx:
+            fiyat = f"{mn:,} - {mx:,} TL"
+        elif mx:
+            fiyat = f"Max {mx:,} TL"
+        elif mn:
+            fiyat = f"Min {mn:,} TL"
+        else:
+            fiyat = "Yok"
+
+        text = (
+            f"🔍 *Filtre Detayı*\n\n"
+            f"🆔 ID: `{f['id']}`\n"
+            f"📌 İsim: {f['name']}\n"
+            f"🎨 Anahtar Kelimeler: {f.get('keywords') or 'Yok'}\n"
+            f"💰 Fiyat Filtresi: {fiyat}\n"
+            f"📅 Eklenme: {f.get('created_at', '-')}\n\n"
+            f"🔗 *Tam URL:*\n`{f['url']}`"
+        )
+        await update.message.reply_text(text, parse_mode="Markdown")
+
+
+
     user_id = update.effective_user.id
     filters_list = await get_filters(user_id)
 
@@ -382,6 +430,7 @@ async def run_bot():
     application.add_handler(CommandHandler("yardim", yardim))
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("filtrelerim", filtrelerim))
+    application.add_handler(CommandHandler("filtre_detay", filtre_detay))
     application.add_handler(CommandHandler("filtre_sil", filtre_sil))
     application.add_handler(CommandHandler("simdi_kontrol", simdi_kontrol))
     application.add_handler(CommandHandler("bildirimleri_durdur", bildirimleri_durdur))
