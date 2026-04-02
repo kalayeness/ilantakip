@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  api:
+    build: .
+    container_name: ilantakip-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./firebase-credentials.json:/app/firebase-credentials.json
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    container_name: ilantakip-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:
