@@ -42,30 +42,32 @@ def validate_sahibinden_url(url: str) -> bool:
 
 
 def normalize_url(url: str) -> str:
-    """Sayfalama parametrelerini kaldır, sadece ilk sayfayı tara."""
+    """Sayfalama offset'ini kaldır ama pagingSize'ı koru."""
     parsed = urlparse(url)
     params = parse_qs(parsed.query, keep_blank_values=True)
-    params.pop("pagingOffset", None)
-    params.pop("pagingSize", None)
+    params.pop("pagingOffset", None)  # Her zaman ilk sayfadan başla
     new_query = urlencode({k: v[0] for k, v in params.items()})
     return urlunparse(parsed._replace(query=new_query))
 
 
-def make_page_url(base_url: str, offset: int, page_size: int = 20) -> str:
-    """Sayfa URL'si oluştur."""
+def make_page_url(base_url: str, offset: int) -> str:
+    """Sayfa URL'si oluştur — pagingSize URL'den gelir, sadece offset değişir."""
     parsed = urlparse(base_url)
     params = parse_qs(parsed.query, keep_blank_values=True)
     params["pagingOffset"] = [str(offset)]
-    params["pagingSize"] = [str(page_size)]
     new_query = urlencode({k: v[0] for k, v in params.items()})
     return urlunparse(parsed._replace(query=new_query))
 
 
-def fetch_listings(url: str, max_pages: int = 5, page_size: int = 50) -> list[dict]:
+def fetch_listings(url: str, max_pages: int = 5) -> list[dict]:
     """Sahibinden.com'dan birden fazla sayfa ilanı çek."""
     base_url = normalize_url(url)
     headers = random.choice(HEADERS_LIST)
     all_listings = []
+
+    # URL'deki pagingSize'ı oku, yoksa 20 varsay
+    parsed_params = parse_qs(urlparse(url).query)
+    page_size = int(parsed_params.get("pagingSize", ["20"])[0])
 
     try:
         session = requests.Session()
@@ -74,7 +76,7 @@ def fetch_listings(url: str, max_pages: int = 5, page_size: int = 50) -> list[di
 
         for page in range(max_pages):
             offset = page * page_size
-            page_url = make_page_url(base_url, offset, page_size) if page > 0 else base_url
+            page_url = make_page_url(base_url, offset) if page > 0 else base_url
 
             try:
                 response = session.get(page_url, headers=headers, timeout=20)
