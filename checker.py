@@ -1,6 +1,7 @@
 import logging
 from database import get_all_active_filters, get_seen_listing_ids, mark_listings_seen
 from scraper import fetch_listings, format_listing_message, apply_local_filters
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +17,8 @@ async def check_filter(filter_record: dict) -> list[dict]:
 
     logger.info(f"Filtre kontrol ediliyor: '{filter_name}' (ID: {filter_id})")
 
-    # Mevcut ilanları çek
-    current_listings = fetch_listings(url)
+    # Mevcut ilanları çek (tüm sayfalar)
+    current_listings = fetch_listings(url, max_pages=config.MAX_PAGES)
     if not current_listings:
         logger.info(f"Filtre '{filter_name}': İlan listesi alınamadı veya boş.")
         return []

@@ -51,35 +51,69 @@ def normalize_url(url: str) -> str:
     return urlunparse(parsed._replace(query=new_query))
 
 
-def fetch_listings(url: str) -> list[dict]:
-    """Sahibinden.com sayfasından ilanları çek."""
-    url = normalize_url(url)
+def make_page_url(base_url: str, offset: int, page_size: int = 20) -> str:
+    """Sayfa URL'si oluştur."""
+    parsed = urlparse(base_url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    params["pagingOffset"] = [str(offset)]
+    params["pagingSize"] = [str(page_size)]
+    new_query = urlencode({k: v[0] for k, v in params.items()})
+    return urlunparse(parsed._replace(query=new_query))
+
+
+def fetch_listings(url: str, max_pages: int = 3) -> list[dict]:
+    """Sahibinden.com'dan birden fazla sayfa ilanı çek."""
+    base_url = normalize_url(url)
     headers = random.choice(HEADERS_LIST)
+    all_listings = []
+    page_size = 20
 
     try:
         session = requests.Session()
-        # Önce ana sayfaya git (cookie almak için)
         session.get(SAHIBINDEN_BASE, headers=headers, timeout=15)
         time.sleep(random.uniform(1, 2))
 
-        response = session.get(url, headers=headers, timeout=20)
-        response.raise_for_status()
+        for page in range(max_pages):
+            offset = page * page_size
+            page_url = make_page_url(base_url, offset, page_size) if page > 0 else base_url
 
-        return parse_listings(response.text, url)
+            try:
+                response = session.get(page_url, headers=headers, timeout=20)
+                response.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 403:
+                    logger.warning(f"Sayfa {page + 1}: Erişim engellendi (403).")
+                elif e.response.status_code == 503:
+                    logger.warning(f"Sayfa {page + 1}: Geçici olarak kullanılamıyor (503).")
+                else:
+                    logger.error(f"Sayfa {page + 1} HTTP hatası: {e}")
+                break
 
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 403:
-            logger.warning("Sahibinden.com erişim engelledi (403). Proxy gerekebilir.")
-        elif e.response.status_code == 503:
-            logger.warning("Sahibinden.com geçici olarak kullanılamıyor (503).")
-        else:
-            logger.error(f"HTTP hatası: {e}")
-        return []
+            page_listings = parse_listings(response.text, page_url)
+
+            if not page_listings:
+                logger.info(f"Sayfa {page + 1}: İlan yok, durduruldu.")
+                break
+
+            all_listings.extend(page_listings)
+            logger.info(f"Sayfa {page + 1}: {len(page_listings)} ilan, toplam: {len(all_listings)}")
+
+            # Son sayfaya ulaşıldıysa dur
+            if len(page_listings) < page_size:
+                logger.info("Son sayfaya ulaşıldı.")
+                break
+
+            # Sayfalar arası bekleme (rate limit için)
+            if page < max_pages - 1:
+                time.sleep(random.uniform(1.5, 3))
+
+        return all_listings
+
     except requests.exceptions.ConnectionError:
-        logger.error("Bağlantı hatası. İnternet bağlantısını kontrol edin.")
+        logger.error("Bağlantı hatası.")
         return []
     except requests.exceptions.Timeout:
-        logger.error("İstek zaman aşımına uğradı.")
+        logger.error("Zaman aşımı.")
         return []
     except Exception as e:
         logger.error(f"Beklenmeyen hata: {e}")
