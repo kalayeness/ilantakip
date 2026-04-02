@@ -88,7 +88,7 @@ def fetch_listings(url: str) -> list[dict]:
 
 def parse_listings(html: str, base_url: str) -> list[dict]:
     """HTML'den ilan bilgilerini parse et."""
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, "html.parser")
     listings = []
 
     # Sahibinden.com'un listing tablosu
