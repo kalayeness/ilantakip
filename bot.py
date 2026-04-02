@@ -285,7 +285,7 @@ async def filtre_detay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode="Markdown")
 
 
-
+async def filtre_sil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     filters_list = await get_filters(user_id)
 
