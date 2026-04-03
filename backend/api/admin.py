@@ -1,3 +1,4 @@
+import json
 import os
 import aiosqlite
 from fastapi import APIRouter
@@ -58,6 +59,16 @@ async def admin_panel():
             <td>{u['joined_at'] or '-'}</td>
         </tr>"""
 
+    CATEGORY_LABELS = {
+        "araba": "🚗 Araba",
+        "ev": "🏠 Ev/Daire",
+        "motosiklet": "🏍 Motosiklet",
+        "elektronik": "📱 Elektronik",
+        "tekne": "⛵ Tekne/Yat",
+        "is_makinesi": "🚜 İş Makinesi",
+        "genel": "🌐 Genel",
+    }
+
     filter_rows = ""
     for f in filters:
         name = f"@{f['username']}" if f["username"] else f["first_name"] or "?"
@@ -68,11 +79,26 @@ async def admin_panel():
             mx = f"{f['max_price']:,}" if f.get("max_price") else "∞"
             price_range = f"{mn} - {mx} TL"
         url_short = f['url'][:60] + "..." if len(f['url']) > 60 else f['url']
+        cat_key = f.get("category") or "genel"
+        cat_label = CATEGORY_LABELS.get(cat_key, "🌐 Genel")
+
+        # Kategori filtrelerini tooltip olarak göster
+        cat_filters_title = ""
+        try:
+            cat_filters_data = json.loads(f.get("category_filters") or "{}")
+            if cat_filters_data:
+                cat_filters_title = " | ".join(f"{k}: {v}" for k, v in cat_filters_data.items())
+        except Exception:
+            pass
+
+        cat_cell = f'<span title="{cat_filters_title}">{cat_label}</span>' if cat_filters_title else cat_label
+
         filter_rows += f"""
         <tr>
             <td>{f['id']}</td>
             <td>{name}</td>
             <td><strong>{f['name']}</strong></td>
+            <td>{cat_cell}</td>
             <td title="{f['url']}"><a href="{f['url']}" target="_blank">{url_short}</a></td>
             <td>{keywords}</td>
             <td>{price_range}</td>
@@ -161,7 +187,7 @@ async def admin_panel():
       <span class="badge">{len(filters)}</span>
     </div>
     <div class="table-wrap">
-      {"<table><thead><tr><th>ID</th><th>Kullanıcı</th><th>Filtre Adı</th><th>URL</th><th>Anahtar Kelimeler</th><th>Fiyat Aralığı</th><th>Taranan İlan</th><th>Oluşturulma</th></tr></thead><tbody>" + filter_rows + "</tbody></table>" if filters else '<div class="empty">Henüz aktif filtre yok</div>'}
+      {"<table><thead><tr><th>ID</th><th>Kullanıcı</th><th>Filtre Adı</th><th>Kategori</th><th>URL</th><th>Anahtar Kelimeler</th><th>Fiyat Aralığı</th><th>Taranan İlan</th><th>Oluşturulma</th></tr></thead><tbody>" + filter_rows + "</tbody></table>" if filters else '<div class="empty">Henüz aktif filtre yok</div>'}
     </div>
   </div>
 </div>
