@@ -29,7 +29,8 @@ pyautogui.PAUSE = 0
 mouse = MouseController()
 
 BARS        = ["F1", "F2", "F3", "F4", "F5"]
-SLOTS       = 6          # Her barda kac slot
+SLOTS       = 5          # Her barda kac slot (3-7 arası, 1=light feet, 2=hp pot atlandı)
+SLOT_START  = 3          # Gösterimde ilk slot numarası
 CONFIG_FILE = "ko_macro_config.json"
 SPAM_KEYS   = ["8", "9", "0"]
 
@@ -116,19 +117,20 @@ class MacroApp:
             tab = tk.Frame(nb, bg=CARD, padx=10, pady=10)
             nb.add(tab, text=f"  {bar}  ")
 
-            tk.Label(tab, text=f"{bar} Barı  —  Skill resimlerini slotlara ekle",
+            tk.Label(tab, text=f"{bar} Barı  —  Slot 3-7 arası skill resimleri  (1=light feet, 2=hp pot atlandı)",
                      font=("Segoe UI", 9), bg=CARD, fg=MUTED).pack(anchor="w", pady=(0, 8))
 
             row = tk.Frame(tab, bg=CARD)
             row.pack()
 
             for i in range(SLOTS):
+                slot_num = SLOT_START + i   # 3, 4, 5, 6, 7
                 cell = tk.Frame(row, bg=CARD, padx=4)
                 cell.grid(row=0, column=i)
 
                 btn = tk.Button(
                     cell,
-                    text=f"＋\nSlot {i+1}",
+                    text=f"＋\nSlot {slot_num}",
                     width=8, height=5,
                     bg=SLOT_EMPTY, fg="#5555aa",
                     font=("Segoe UI", 8), relief="flat", cursor="hand2",
@@ -261,10 +263,11 @@ class MacroApp:
 
     def _clear_bar(self, bar: str):
         for i in range(SLOTS):
+            slot_num = SLOT_START + i   # 3, 4, 5, 6, 7
             self.slot_paths[bar][i] = None
             self.slot_templates[bar][i] = None
             btn = self.slot_btns[bar][i]
-            btn.config(image="", text=f"＋\nSlot {i+1}",
+            btn.config(image="", text=f"＋\nSlot {slot_num}",
                        bg=SLOT_EMPTY, fg="#5555aa")
             btn.image = None
             self.slot_lbls[bar][i].config(text="boş", fg="#383860")
