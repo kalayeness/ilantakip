@@ -851,20 +851,36 @@ async def simdi_kontrol(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔍 Kontrol ediliyor, lütfen bekle...")
 
     from checker import check_filter, send_check_results
-    data = {"new": [], "no_new": []}
+    data = {"new": [], "no_new": [], "error": []}
 
     for f in filters_list:
         new_listings = await check_filter(f)
-        if new_listings:
+        if new_listings is None:
+            data["error"].append(f["name"])
+        elif new_listings:
             data["new"].append({"filter_name": f["name"], "listings": new_listings})
         else:
             data["no_new"].append(f["name"])
 
     await msg.delete()
 
-    if not data["new"] and not data["no_new"]:
-        await update.message.reply_text("⚠️ Filtrelerden sonuç alınamadı.")
-        return
+    # Özet mesaj
+    lines = []
+    if data["new"]:
+        # Yeni ilanlar send_check_results ile gönderilecek
+        pass
+    if data["no_new"]:
+        lines += [f"🔍 *{n}*: Yeni ilan yok" for n in data["no_new"]]
+    if data["error"]:
+        lines += [f"⚠️ *{n}*: Sahibinden.com'a erişilemedi (engel/bağlantı)" for n in data["error"]]
+
+    if data["error"]:
+        err_lines = [f"⚠️ *{n}*: Sahibinden.com'a erişilemedi" for n in data["error"]]
+        await update.message.reply_text(
+            "🚫 *Erişim Hatası*\n\n" + "\n".join(err_lines) +
+            "\n\nSahibinden.com botu geçici olarak engellemiş olabilir. Birkaç dakika sonra tekrar dene.",
+            parse_mode="Markdown",
+        )
 
     await send_check_results(context.bot, user_id, data)
 
