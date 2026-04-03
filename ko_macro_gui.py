@@ -66,6 +66,7 @@ class MacroApp:
 
         # Ayarlar
         self.act_key    = tk.StringVar(value="z")
+        self.stop_key   = tk.StringVar(value="insert")   # oyun içi acil durdurma
         self.confidence = tk.DoubleVar(value=0.82)
         self.status_var = tk.StringVar(value="Durduruldu")
 
@@ -75,6 +76,7 @@ class MacroApp:
 
         self._build_ui()
         self._load_config()
+        self._register_stop_hotkey()
 
     # ─── UI ──────────────────────────────────────────────────────────────────
 
@@ -172,8 +174,21 @@ class MacroApp:
                  bg=CARD2, fg=FG, insertbackground=FG,
                  justify="center", relief="flat"
                  ).pack(side="left")
-        tk.Label(ak_row, text=" tuşuna basılı tut",
+        tk.Label(ak_row, text=" basılı tut → skill",
                  bg=CARD, fg=MUTED, font=("Segoe UI", 8)).pack(side="left")
+
+        sep()
+        sec("Acil Durdurma Tuşu (oyun içinden)")
+        sk_row = tk.Frame(right, bg=CARD)
+        sk_row.pack(fill="x")
+        sk_entry = tk.Entry(sk_row, textvariable=self.stop_key,
+                            width=9, font=("Segoe UI", 11, "bold"),
+                            bg="#3a1a1a", fg="#ff8888", insertbackground=FG,
+                            justify="center", relief="flat")
+        sk_entry.pack(side="left")
+        tk.Label(sk_row, text=" → DURDUR",
+                 bg=CARD, fg=MUTED, font=("Segoe UI", 8)).pack(side="left")
+        sk_entry.bind("<FocusOut>", lambda e: self._register_stop_hotkey())
 
         sep()
         sec("Eşleşme Hassasiyeti")
@@ -221,11 +236,12 @@ class MacroApp:
             "   ekran görüntüsü ekle\n"
             "② BAŞLAT'a bas\n"
             "③ Aktivasyon tuşunu\n"
-            "   basılı tut\n"
+            "   basılı tut (skill)\n"
             "④ F1→F2→... sırasıyla\n"
             "   skill arar, bulursa\n"
             "   o barı basar\n"
-            "⑤ 8/9/0/sağtık her zaman"
+            "⑤ 8/9/0/sağtık her zaman\n"
+            "⑥ INSERT → her yerden dur"
         )
         tk.Label(right, text=help_txt, bg=CARD, fg="#4a4a6a",
                  font=("Segoe UI", 8), justify="left").pack(anchor="w")
@@ -293,6 +309,27 @@ class MacroApp:
     def _set_status(self, text: str, color: str = FG):
         self.status_var.set(text)
         self.status_lbl.config(fg=color)
+
+    def _register_stop_hotkey(self):
+        """Acil durdurma tuşunu (varsayılan: INSERT) her yerden dinler."""
+        try:
+            keyboard.unhook_all_hotkeys()
+        except Exception:
+            pass
+        sk = self.stop_key.get().strip().lower() or "insert"
+        try:
+            keyboard.add_hotkey(sk, lambda: self.root.after(0, self._emergency_stop))
+        except Exception:
+            pass
+
+    def _emergency_stop(self):
+        """Oyun içinden tek tuşla makroyu tamamen durdurur."""
+        if self.active:
+            self.active = False
+            self.stop_ev.set()
+            self.toggle_btn.config(text="▶   BAŞLAT", bg=GREEN,
+                                   activebackground="#15803d")
+            self._set_status("⛔ Durduruldu (INSERT)", "#f87171")
 
     # ─── Spam döngüsü ─────────────────────────────────────────────────────────
 
@@ -367,6 +404,7 @@ class MacroApp:
     def _save_config(self):
         cfg = {
             "activation_key": self.act_key.get(),
+            "stop_key":       self.stop_key.get(),
             "confidence":     self.confidence.get(),
             "slots": {b: self.slot_paths[b] for b in BARS}
         }
@@ -381,6 +419,7 @@ class MacroApp:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             self.act_key.set(cfg.get("activation_key", "z"))
+            self.stop_key.set(cfg.get("stop_key", "insert"))
             self.confidence.set(cfg.get("confidence", 0.82))
             for bar in BARS:
                 for i, path in enumerate(cfg.get("slots", {}).get(bar, [None]*SLOTS)):
