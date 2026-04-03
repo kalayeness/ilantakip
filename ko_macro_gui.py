@@ -23,6 +23,7 @@ import ctypes
 from ctypes import wintypes
 
 # ─── DirectInput sabitleri ────────────────────────────────────────────────────
+INPUT_MOUSE           = 0
 INPUT_KEYBOARD        = 1
 KEYEVENTF_SCANCODE    = 0x0008
 KEYEVENTF_KEYUP       = 0x0002
@@ -42,7 +43,15 @@ SCAN = {
     "num6":0x4D, "num7":0x47,"num8":0x48,"num9":0x49,"num0":0x52,
 }
 
-# ctypes yapıları
+# ── Doğru ctypes yapıları (Union ile — 32/64 bit uyumlu) ──────────────────────
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [("dx",          wintypes.LONG),
+                ("dy",          wintypes.LONG),
+                ("mouseData",   wintypes.DWORD),
+                ("dwFlags",     wintypes.DWORD),
+                ("time",        wintypes.DWORD),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
 class _KEYBDINPUT(ctypes.Structure):
     _fields_ = [("wVk",         wintypes.WORD),
                 ("wScan",       wintypes.WORD),
@@ -50,34 +59,38 @@ class _KEYBDINPUT(ctypes.Structure):
                 ("time",        wintypes.DWORD),
                 ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
 
+class _INPUT_UNION(ctypes.Union):
+    _fields_ = [("mi", _MOUSEINPUT),
+                ("ki", _KEYBDINPUT)]
+
 class _INPUT(ctypes.Structure):
-    _fields_ = [("type",    wintypes.DWORD),
-                ("ki",      _KEYBDINPUT),
-                ("padding", ctypes.c_ubyte * 8)]
+    _fields_ = [("type",   wintypes.DWORD),
+                ("_input", _INPUT_UNION)]
 
-_extra = ctypes.c_ulong(0)
-
-def _di_key(scan: int, key_up: bool = False):
-    """DirectInput scan code ile tek tuş bas/bırak."""
-    flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if key_up else 0)
-    ki  = _KEYBDINPUT(0, scan, flags, 0, ctypes.pointer(_extra))
-    inp = _INPUT(INPUT_KEYBOARD, ki)
-    ctypes.windll.user32.SendInput(1, ctypes.pointer(inp), ctypes.sizeof(inp))
+_SendInput = ctypes.windll.user32.SendInput
 
 def press_key(key: str, hold: float = 0.04):
-    """Verilen tuş adına göre DirectInput ile bas + bırak."""
+    """DirectInput scan code ile tuşa bas + bırak."""
     sc = SCAN.get(key.lower())
     if sc is None:
         return
-    _di_key(sc, False)
-    time.sleep(hold)
-    _di_key(sc, True)
+    extra = ctypes.c_ulong(0)
+    for key_up in (False, True):
+        flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if key_up else 0)
+        ki  = _KEYBDINPUT(0, sc, flags, 0, ctypes.pointer(extra))
+        inp = _INPUT(INPUT_KEYBOARD, _INPUT_UNION(ki=ki))
+        _SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
+        if not key_up:
+            time.sleep(hold)
 
 def right_click():
-    """DirectInput mouse sağ tık."""
-    ctypes.windll.user32.mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
-    time.sleep(0.01)
-    ctypes.windll.user32.mouse_event(MOUSEEVENTF_RIGHTUP,   0, 0, 0, 0)
+    """DirectInput sağ tık (SendInput)."""
+    extra = ctypes.c_ulong(0)
+    for flags in (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP):
+        mi  = _MOUSEINPUT(0, 0, 0, flags, 0, ctypes.pointer(extra))
+        inp = _INPUT(INPUT_MOUSE, _INPUT_UNION(mi=mi))
+        _SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
+        time.sleep(0.01)
 
 # ─── Sabitleri ────────────────────────────────────────────────────────────────
 import pyautogui  # sadece screenshot için
@@ -361,13 +374,21 @@ class MacroApp:
 
     def _toggle(self):
         if not self.active:
+            # Tkinter değişkenlerini MAIN THREAD'de oku, thread'e parametre olarak geç
+            cfg = {
+                "minor_on":   self.minor_on.get(),
+                "minor_key":  self.minor_key.get().strip().lower(),
+                "minor_sec":  float(self.minor_sec.get()),
+                "act_key":    self.act_key.get().strip().lower(),
+                "confidence": float(self.confidence.get()),
+            }
             self.active = True
             self.stop_ev.clear()
             self._last_minor = 0.0
             self.toggle_btn.config(text="⏹   DURDUR", bg=RED,
                                    activebackground="#b91c1c")
-            self._set_status("Aktif — tuşa basılı tut", "#a78bfa")
-            threading.Thread(target=self._main_loop, daemon=True).start()
+            self._set_status("Aktif", "#a78bfa")
+            threading.Thread(target=self._main_loop, args=(cfg,), daemon=True).start()
         else:
             self._do_stop()
 
@@ -398,73 +419,74 @@ class MacroApp:
             self._do_stop()
             self._set_status("⛔ Durduruldu (acil)", "#f87171")
 
-    # ─── Ana döngü (tek thread — spam + minor + skill) ────────────────────────
+    # ─── Ana döngü ───────────────────────────────────────────────────────────
 
-    def _main_loop(self):
+    def _main_loop(self, cfg: dict):
         """
-        Tek thread içinde 3 iş döner:
-          1. Spam: 8 · 9 · 0 · sağ tık — sürekli
-          2. Minor: zamanlayıcıyla belirli aralıkta
-          3. Skill: aktivasyon tuşu basılıyken image match → F tuşu
+        Sürekli çalışır (basılı tuş gerekmez):
+          1. Spam : 8 · 9 · 0 · sağ tık
+          2. Minor: her N saniyede bir
+          3. Skill : aktivasyon tuşu basılıyken image match
+        cfg: main thread'den alınan snapshot (thread-safe)
         """
-        bar_key = {"F1": "f1", "F2": "f2", "F3": "f3", "F4": "f4", "F5": "f5"}
+        bar_key  = {"F1": "f1", "F2": "f2", "F3": "f3", "F4": "f4", "F5": "f5"}
         spam_idx = 0
+        minor_on  = cfg["minor_on"]
+        minor_key = cfg["minor_key"]
+        minor_sec = cfg["minor_sec"]
+        act_key   = cfg["act_key"]
+        confidence= cfg["confidence"]
 
         while not self.stop_ev.is_set():
             now = time.time()
 
-            # ── 1. Spam ──
+            # ── 1. Spam ──────────────────────────────────────────────────────
             press_key(SPAM_KEYS[spam_idx % len(SPAM_KEYS)], hold=0.02)
             spam_idx += 1
             right_click()
 
-            # ── 2. Minor ──
-            if (self.minor_on.get() and
-                    now - self._last_minor >= self.minor_sec.get()):
-                mk = self.minor_key.get().strip().lower()
-                if mk:
-                    press_key(mk, hold=0.03)
-                    self._last_minor = now
-                    self.root.after(0, self._set_status,
-                                   f"💊 Minor ({mk.upper()}) kullanıldı", "#38bdf8")
+            # ── 2. Minor ─────────────────────────────────────────────────────
+            if minor_on and minor_key and (now - self._last_minor >= minor_sec):
+                press_key(minor_key, hold=0.04)
+                self._last_minor = now
+                self.root.after(0, self._set_status,
+                               f"💊 Minor ({minor_key.upper()})", "#38bdf8")
 
-            # ── 3. Skill (aktivasyon tuşu basılıyken) ──
-            ak = self.act_key.get().strip().lower()
-            if ak and keyboard.is_pressed(ak):
+            # ── 3. Skill (aktivasyon tuşu basılıyken) ────────────────────────
+            try:
+                ak_held = act_key and keyboard.is_pressed(act_key)
+            except Exception:
+                ak_held = False
+
+            if ak_held:
                 try:
                     screen_bgr = cv2.cvtColor(
-                        np.array(__import__("pyautogui").screenshot()),
-                        cv2.COLOR_RGB2BGR)
+                        np.array(pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
                 except Exception:
                     time.sleep(0.01)
                     continue
 
-                conf = self.confidence.get()
-
+                skill_used = False
                 for bar in BARS:
-                    templates = [t for t in self.slot_templates[bar]
-                                 if t is not None]
+                    templates = [t for t in self.slot_templates[bar] if t is not None]
                     if not templates:
                         continue
-
-                    hit = False
-                    for tmpl in templates:
-                        h, w = tmpl.shape[:2]
-                        if h > screen_bgr.shape[0] or w > screen_bgr.shape[1]:
-                            continue
-                        res = cv2.matchTemplate(
-                            screen_bgr, tmpl, cv2.TM_CCOEFF_NORMED)
-                        if cv2.minMaxLoc(res)[1] >= conf:
-                            hit = True
-                            break
-
+                    hit = any(
+                        cv2.minMaxLoc(cv2.matchTemplate(
+                            screen_bgr, tmpl, cv2.TM_CCOEFF_NORMED))[1] >= confidence
+                        for tmpl in templates
+                        if tmpl.shape[0] <= screen_bgr.shape[0]
+                        and tmpl.shape[1] <= screen_bgr.shape[1]
+                    )
                     if hit:
                         fk = bar_key[bar]
                         press_key(fk, hold=0.03)
                         self.root.after(0, self._set_status,
-                                       f"⚡ {bar} ({fk.upper()}) vuruldu", "#4ade80")
+                                       f"⚡ {bar} ({fk.upper()})", "#4ade80")
+                        skill_used = True
                         break
-                else:
+
+                if not skill_used:
                     self.root.after(0, self._set_status,
                                    "⏳ Skill bekleniyor...", "#facc15")
 
