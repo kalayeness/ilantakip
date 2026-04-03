@@ -24,6 +24,8 @@ async def init_db():
             ("keywords", "TEXT DEFAULT ''"),
             ("min_price", "INTEGER DEFAULT NULL"),
             ("max_price", "INTEGER DEFAULT NULL"),
+            ("category", "TEXT DEFAULT 'genel'"),
+            ("category_filters", "TEXT DEFAULT '{}'"),
         ]:
             try:
                 await db.execute(f"ALTER TABLE filters ADD COLUMN {col} {definition}")
@@ -74,11 +76,13 @@ async def add_filter(
     keywords: str = "",
     min_price: int | None = None,
     max_price: int | None = None,
+    category: str = "genel",
+    category_filters: str = "{}",
 ) -> int:
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cursor = await db.execute(
-            "INSERT INTO filters (user_id, name, url, keywords, min_price, max_price) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, name, url, keywords, min_price, max_price)
+            "INSERT INTO filters (user_id, name, url, keywords, min_price, max_price, category, category_filters) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, name, url, keywords, min_price, max_price, category, category_filters)
         )
         await db.commit()
         return cursor.lastrowid

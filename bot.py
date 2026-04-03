@@ -1,3 +1,4 @@
+import json
 import logging
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -29,10 +30,85 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Konuşma durumları
-WAITING_FILTER_NAME, WAITING_FILTER_URL, WAITING_FILTER_KEYWORDS, WAITING_FILTER_PRICE = range(4)
+(WAITING_FILTER_NAME, WAITING_FILTER_URL, WAITING_FILTER_KEYWORDS,
+ WAITING_FILTER_PRICE, WAITING_CATEGORY, WAITING_CATEGORY_FILTER) = range(6)
 
 # Geçici kullanıcı verisi
 user_states: dict[int, dict] = {}
+
+# Kategori tanımları
+CATEGORIES = {
+    "araba": {
+        "label": "🚗 Araba",
+        "filters": [
+            {"key": "min_year", "label": "Minimum yıl", "hint": "örn: 2018"},
+            {"key": "max_year", "label": "Maksimum yıl", "hint": "örn: 2024"},
+            {"key": "max_km", "label": "Maksimum kilometre", "hint": "örn: 100000"},
+            {"key": "fuel_type", "label": "Yakıt tipi", "hint": "benzin / dizel / elektrik / hybrid / LPG"},
+            {"key": "gear_type", "label": "Vites", "hint": "manuel / otomatik / yarı otomatik"},
+            {"key": "color", "label": "Renk", "hint": "örn: beyaz, siyah, gümüş"},
+            {"key": "body_type", "label": "Kasa tipi", "hint": "sedan / SUV / hatchback / pickup / minivan"},
+        ],
+    },
+    "ev": {
+        "label": "🏠 Ev / Daire",
+        "filters": [
+            {"key": "min_m2", "label": "Minimum metrekare", "hint": "örn: 80"},
+            {"key": "max_m2", "label": "Maksimum metrekare", "hint": "örn: 200"},
+            {"key": "room_count", "label": "Oda sayısı", "hint": "örn: 2+1, 3+1, 4+1"},
+            {"key": "max_building_age", "label": "Maksimum bina yaşı (yıl)", "hint": "örn: 10"},
+            {"key": "floor", "label": "Bulunduğu kat", "hint": "örn: 3, zemin, çatı katı"},
+            {"key": "heating", "label": "Isıtma tipi", "hint": "doğalgaz / merkezi / kombi / klima / soba"},
+            {"key": "furnished", "label": "Eşya durumu", "hint": "eşyalı / eşyasız / yarı eşyalı"},
+            {"key": "site", "label": "Site içinde mi?", "hint": "evet / hayır"},
+        ],
+    },
+    "motosiklet": {
+        "label": "🏍 Motosiklet",
+        "filters": [
+            {"key": "min_year", "label": "Minimum yıl", "hint": "örn: 2019"},
+            {"key": "max_year", "label": "Maksimum yıl", "hint": "örn: 2024"},
+            {"key": "max_km", "label": "Maksimum kilometre", "hint": "örn: 20000"},
+            {"key": "engine_cc", "label": "Motor hacmi (cc)", "hint": "örn: 125, 300, 650, 1000"},
+            {"key": "moto_type", "label": "Tip", "hint": "naked / enduro / scooter / sport / touring / chopper"},
+            {"key": "color", "label": "Renk", "hint": "örn: kırmızı, siyah"},
+        ],
+    },
+    "elektronik": {
+        "label": "📱 Elektronik",
+        "filters": [
+            {"key": "brand", "label": "Marka", "hint": "örn: Apple, Samsung, Sony"},
+            {"key": "storage", "label": "Depolama", "hint": "örn: 128GB, 256GB, 512GB, 1TB"},
+            {"key": "ram", "label": "RAM", "hint": "örn: 8GB, 16GB, 32GB"},
+            {"key": "color", "label": "Renk", "hint": "örn: uzay grisi, gök mavisi, siyah"},
+            {"key": "condition", "label": "Durum", "hint": "sıfır / ikinci el / teşhir / yenilmiş"},
+        ],
+    },
+    "tekne": {
+        "label": "⛵ Tekne / Yat",
+        "filters": [
+            {"key": "boat_type", "label": "Tip", "hint": "yelkenli / motorlu / sürat / karavela / katamaran"},
+            {"key": "min_year", "label": "Minimum yıl", "hint": "örn: 2010"},
+            {"key": "max_year", "label": "Maksimum yıl", "hint": "örn: 2024"},
+            {"key": "min_length", "label": "Minimum uzunluk (m)", "hint": "örn: 7"},
+            {"key": "max_length", "label": "Maksimum uzunluk (m)", "hint": "örn: 20"},
+            {"key": "engine_hp", "label": "Motor gücü (HP)", "hint": "örn: 150, 300"},
+        ],
+    },
+    "is_makinesi": {
+        "label": "🚜 İş Makinesi",
+        "filters": [
+            {"key": "machine_type", "label": "Makine tipi", "hint": "kepçe / forklift / traktör / vinç / kamyon"},
+            {"key": "min_year", "label": "Minimum yıl", "hint": "örn: 2015"},
+            {"key": "max_year", "label": "Maksimum yıl", "hint": "örn: 2024"},
+            {"key": "max_hours", "label": "Maksimum çalışma saati", "hint": "örn: 5000"},
+        ],
+    },
+    "genel": {
+        "label": "🌐 Genel (Kategori Yok)",
+        "filters": [],
+    },
+}
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -77,9 +153,9 @@ async def yardim(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def filtre_ekle_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    user_states[user_id] = {}
+    user_states[user_id] = {"category_filters": {}}
     await update.message.reply_text(
-        "📝 Filtren için bir isim gir:\n_(örn: İstanbul Kiralik 2+1)_",
+        "📝 Filtren için bir isim gir:\n_(örn: Kırmızı Ferrari, MacBook M2, İstanbul Kiralık)_",
         parse_mode="Markdown",
     )
     return WAITING_FILTER_NAME
@@ -94,13 +170,93 @@ async def filtre_isim_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAITING_FILTER_NAME
 
     user_states[user_id]["name"] = name
+
+    # Kategori seçim klavyesi
+    keyboard = []
+    row = []
+    for key, cat in CATEGORIES.items():
+        row.append(InlineKeyboardButton(cat["label"], callback_data=f"cat_{key}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
     await update.message.reply_text(
         f"✅ İsim: *{name}*\n\n"
-        "🔗 Şimdi sahibinden.com arama URL'sini yapıştır:\n"
+        "📂 Kategori seç:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return WAITING_CATEGORY
+
+
+async def kategori_sec_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    category_key = query.data.replace("cat_", "")
+    category = CATEGORIES.get(category_key, CATEGORIES["genel"])
+    user_states[user_id]["category"] = category_key
+
+    await query.edit_message_text(
+        f"✅ Kategori: *{category['label']}*\n\n"
+        "🔗 Sahibinden.com arama URL'sini yapıştır:\n"
         "_(Sahibinden.com'da filtreleri ayarlayıp adres çubuğundaki URL'yi kopyala)_",
         parse_mode="Markdown",
     )
     return WAITING_FILTER_URL
+
+
+async def _ask_next_category_filter(update_or_query, user_id: int, context) -> int:
+    """Sıradaki kategori filtresini sor veya bitir."""
+    state = user_states[user_id]
+    category_key = state.get("category", "genel")
+    cat_filters = CATEGORIES[category_key]["filters"]
+    asked = state.get("cat_filter_index", 0)
+
+    if asked >= len(cat_filters):
+        # Tüm kategori filtreleri bitti, anahtar kelimeye geç
+        msg = (
+            "🎨 *Anahtar kelime filtresi* _(isteğe bağlı)_\n\n"
+            "İlan başlığında aranacak kelimeleri virgülle yaz:\n"
+            "_(örn: `kırmızı, metalik, full paket`)_\n\n"
+            "Atlamak için `-` yaz veya `/atla` kullan."
+        )
+        if hasattr(update_or_query, "message") and update_or_query.message:
+            await update_or_query.message.reply_text(msg, parse_mode="Markdown")
+        else:
+            await context.bot.send_message(user_id, msg, parse_mode="Markdown")
+        return WAITING_FILTER_KEYWORDS
+
+    f = cat_filters[asked]
+    msg = (
+        f"*{f['label']}* _(isteğe bağlı)_\n"
+        f"_{f['hint']}_\n\n"
+        "Atlamak için `-` yaz veya `/atla` kullan."
+    )
+    if hasattr(update_or_query, "message") and update_or_query.message:
+        await update_or_query.message.reply_text(msg, parse_mode="Markdown")
+    else:
+        await context.bot.send_message(user_id, msg, parse_mode="Markdown")
+    return WAITING_CATEGORY_FILTER
+
+
+async def kategori_filtre_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    state = user_states[user_id]
+    category_key = state.get("category", "genel")
+    cat_filters = CATEGORIES[category_key]["filters"]
+    idx = state.get("cat_filter_index", 0)
+
+    if idx < len(cat_filters) and text not in ("-", "/atla"):
+        f = cat_filters[idx]
+        state["category_filters"][f["key"]] = text
+
+    state["cat_filter_index"] = idx + 1
+    return await _ask_next_category_filter(update, user_id, context)
 
 
 async def filtre_url_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -117,14 +273,8 @@ async def filtre_url_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAITING_FILTER_URL
 
     user_states[user_id]["url"] = url
-    await update.message.reply_text(
-        "🎨 *Anahtar kelime filtresi* _(isteğe bağlı)_\n\n"
-        "İlan başlığında aranacak kelimeleri virgülle yaz:\n"
-        "_(örn: `gök mavisi, uzay grisi, silver`)_\n\n"
-        "Atlamak için `-` yaz veya `/atla` kullan.",
-        parse_mode="Markdown",
-    )
-    return WAITING_FILTER_KEYWORDS
+    user_states[user_id]["cat_filter_index"] = 0
+    return await _ask_next_category_filter(update, user_id, context)
 
 
 async def filtre_keywords_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -170,6 +320,8 @@ async def filtre_price_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await upsert_user(user_id_val, update.effective_user.username or "", update.effective_user.first_name or "")
 
     state = user_states[user_id]
+    category_key = state.get("category", "genel")
+    cat_filters_json = json.dumps(state.get("category_filters", {}), ensure_ascii=False)
     filter_id = await add_filter(
         user_id_val,
         state["name"],
@@ -177,15 +329,25 @@ async def filtre_price_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keywords=state.get("keywords", ""),
         min_price=min_price,
         max_price=max_price,
+        category=category_key,
+        category_filters=cat_filters_json,
     )
     user_states.pop(user_id, None)
 
     # Özet mesajı
+    cat_label = CATEGORIES.get(category_key, CATEGORIES["genel"])["label"]
     lines = [
         "✅ *Filtre eklendi!*\n",
         f"📌 İsim: {state['name']}",
+        f"📂 Kategori: {cat_label}",
         f"🔗 URL: `{state['url'][:70]}{'...' if len(state['url']) > 70 else ''}`",
     ]
+    cat_filters_data = state.get("category_filters", {})
+    if cat_filters_data:
+        cat_filters_list = CATEGORIES.get(category_key, {}).get("filters", [])
+        for cf in cat_filters_list:
+            if cf["key"] in cat_filters_data:
+                lines.append(f"   • {cf['label']}: `{cat_filters_data[cf['key']]}`")
     if state.get("keywords"):
         lines.append(f"🎨 Kelimeler: `{state['keywords']}`")
     if min_price or max_price:
@@ -219,7 +381,9 @@ async def filtrelerim(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [f"📋 *Aktif Filtreler ({len(filters_list)} adet):*\n"]
     for f in filters_list:
         url_short = f['url'][:60] + "..." if len(f['url']) > 60 else f['url']
-        entry = f"*{f['id']}* — {f['name']}\n`{url_short}`"
+        cat_key = f.get("category", "genel")
+        cat_label = CATEGORIES.get(cat_key, CATEGORIES["genel"])["label"]
+        entry = f"*{f['id']}* — {f['name']} [{cat_label}]\n`{url_short}`"
         if f.get("keywords"):
             entry += f"\n🎨 Kelimeler: `{f['keywords']}`"
         if f.get("min_price") or f.get("max_price"):
@@ -273,10 +437,29 @@ async def filtre_detay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             fiyat = "Yok"
 
+        cat_key = f.get("category", "genel")
+        cat_label = CATEGORIES.get(cat_key, CATEGORIES["genel"])["label"]
+
+        # Kategori filtrelerini göster
+        cat_filters_text = ""
+        try:
+            cat_filters_data = json.loads(f.get("category_filters") or "{}")
+            cat_filter_defs = CATEGORIES.get(cat_key, {}).get("filters", [])
+            for cf in cat_filter_defs:
+                if cf["key"] in cat_filters_data:
+                    cat_filters_text += f"   • {cf['label']}: `{cat_filters_data[cf['key']]}`\n"
+        except Exception:
+            pass
+
         text = (
             f"🔍 *Filtre Detayı*\n\n"
             f"🆔 ID: `{f['id']}`\n"
             f"📌 İsim: {f['name']}\n"
+            f"📂 Kategori: {cat_label}\n"
+        )
+        if cat_filters_text:
+            text += cat_filters_text
+        text += (
             f"🎨 Anahtar Kelimeler: {f.get('keywords') or 'Yok'}\n"
             f"💰 Fiyat Filtresi: {fiyat}\n"
             f"📅 Eklenme: {f.get('created_at', '-')}\n\n"
@@ -410,8 +593,15 @@ async def run_bot():
             WAITING_FILTER_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, filtre_isim_al)
             ],
+            WAITING_CATEGORY: [
+                CallbackQueryHandler(kategori_sec_callback, pattern=r"^cat_")
+            ],
             WAITING_FILTER_URL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, filtre_url_al)
+            ],
+            WAITING_CATEGORY_FILTER: [
+                CommandHandler("atla", kategori_filtre_al),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, kategori_filtre_al)
             ],
             WAITING_FILTER_KEYWORDS: [
                 CommandHandler("atla", filtre_keywords_al),
