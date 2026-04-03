@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from functools import partial
 from database import get_all_active_filters, get_seen_listing_ids, mark_listings_seen
 from scraper import fetch_listings, format_listing_message, apply_local_filters
 import config
@@ -20,7 +22,11 @@ async def check_filter(filter_record: dict) -> list[dict] | None:
 
     logger.info(f"Filtre kontrol ediliyor: '{filter_name}' (ID: {filter_id})")
 
-    current_listings = fetch_listings(url, max_pages=config.MAX_PAGES)
+    # fetch_listings senkron (requests) — event loop'u bloke etmemek için thread'de çalıştır
+    loop = asyncio.get_event_loop()
+    current_listings = await loop.run_in_executor(
+        None, partial(fetch_listings, url, config.MAX_PAGES)
+    )
 
     if current_listings is None:
         logger.warning(f"Filtre '{filter_name}': İlan listesi alınamadı (bağlantı/engel sorunu).")

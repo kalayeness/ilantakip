@@ -11,22 +11,47 @@ logger = logging.getLogger(__name__)
 HEADERS_LIST = [
     {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
+        "DNT": "1",
+    },
+    {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "tr-TR,tr;q=0.8,en-US;q=0.5,en;q=0.3",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
         "Upgrade-Insecure-Requests": "1",
         "Sec-Fetch-Dest": "document",
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Site": "none",
-        "Cache-Control": "max-age=0",
+        "Sec-Fetch-User": "?1",
+        "DNT": "1",
     },
     {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "tr-TR,tr;q=0.8,en;q=0.5",
+        "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.5",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
+        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"macOS"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
     },
 ]
 
@@ -62,14 +87,20 @@ def _is_blocked_or_error(html: str, response) -> bool:
     """Sayfanın engellenip engellenmediğini ya da hata olup olmadığını kontrol et."""
     if response.status_code in (403, 503, 429):
         return True
-    if len(html) < 1500:
+    if response.status_code in (403, 503, 429, 503):
+        logger.warning(f"HTTP {response.status_code} — engellendi.")
+        return True
+    if len(html) < 2000:
+        logger.warning(f"Yanıt çok kısa ({len(html)} byte) — engellendi veya boş sayfa.")
         return True
     soup = BeautifulSoup(html, "html.parser")
     title = (soup.title.string or "").lower() if soup.title else ""
-    if any(w in title for w in ["403", "captcha", "robot", "hata", "error", "engel"]):
+    logger.debug(f"Sayfa başlığı: {title[:80]}")
+    if any(w in title for w in ["403", "captcha", "robot", "hata", "error", "engel", "erişim"]):
+        logger.warning(f"Engel başlığı tespit edildi: {title[:80]}")
         return True
-    # Giriş sayfasına yönlendirme
     if soup.find("input", {"name": re.compile(r"password|sifre", re.I)}):
+        logger.warning("Giriş sayfasına yönlendirildi.")
         return True
     return False
 
@@ -91,11 +122,13 @@ def fetch_listings(url: str, max_pages: int = 5) -> list[dict] | None:
 
     try:
         session = requests.Session()
+        # Ana sayfayı ziyaret et — cookie al, insan gibi görün
         try:
-            session.get(SAHIBINDEN_BASE, headers=headers, timeout=15)
-        except Exception:
-            pass  # Ana sayfa alınamazsa devam et
-        time.sleep(random.uniform(1, 2))
+            r0 = session.get(SAHIBINDEN_BASE, headers=headers, timeout=15)
+            logger.debug(f"Ana sayfa: status={r0.status_code}, {len(r0.text)} byte")
+        except Exception as e:
+            logger.debug(f"Ana sayfa alınamadı: {e}")
+        time.sleep(random.uniform(3, 6))  # Daha uzun bekleme
 
         for page in range(max_pages):
             offset = page * page_size
