@@ -1,13 +1,10 @@
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from pydantic import BaseModel, EmailStr
 from passlib.context import CryptContext
 from jose import jwt, JWTError
-from models.database import get_db
-from models.tables import User
+from models.database import db_fetch, db_execute
 from core.config import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -38,54 +35,45 @@ def create_token(user_id: int) -> str:
     return jwt.encode({"sub": str(user_id), "exp": expire}, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_db),
-) -> User:
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
     try:
         payload = jwt.decode(credentials.credentials, settings.SECRET_KEY, algorithms=[ALGORITHM])
         user_id = int(payload["sub"])
     except (JWTError, KeyError, ValueError):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Geçersiz token")
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if not user:
+    rows = await db_fetch("SELECT * FROM users WHERE id = ?", (user_id,))
+    if not rows:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Kullanıcı bulunamadı")
-    return user
+    return rows[0]
 
 
 @router.post("/register", response_model=TokenResponse)
-async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == req.email))
-    if result.scalar_one_or_none():
+async def register(req: RegisterRequest):
+    existing = await db_fetch("SELECT id FROM users WHERE email = ?", (req.email,))
+    if existing:
         raise HTTPException(status_code=400, detail="Bu email zaten kayıtlı")
 
-    user = User(
-        email=req.email,
-        hashed_password=pwd_context.hash(req.password),
+    hashed = pwd_context.hash(req.password)
+    user_id = await db_execute(
+        "INSERT INTO users (email, hashed_password) VALUES (?, ?)",
+        (req.email, hashed)
     )
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
-    return TokenResponse(access_token=create_token(user.id))
+    return TokenResponse(access_token=create_token(user_id))
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == req.email))
-    user = result.scalar_one_or_none()
-    if not user or not pwd_context.verify(req.password, user.hashed_password):
+async def login(req: LoginRequest):
+    rows = await db_fetch("SELECT * FROM users WHERE email = ?", (req.email,))
+    if not rows or not pwd_context.verify(req.password, rows[0]["hashed_password"]):
         raise HTTPException(status_code=401, detail="Email veya şifre hatalı")
-    return TokenResponse(access_token=create_token(user.id))
+    return TokenResponse(access_token=create_token(rows[0]["id"]))
 
 
 @router.post("/fcm-token")
-async def update_fcm_token(
-    body: dict,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    current_user.fcm_token = body.get("token")
-    await db.commit()
+async def update_fcm_token(body: dict, current_user: dict = Depends(get_current_user)):
+    await db_execute(
+        "UPDATE users SET fcm_token = ? WHERE id = ?",
+        (body.get("token"), current_user["id"])
+    )
     return {"ok": True}

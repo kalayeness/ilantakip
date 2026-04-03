@@ -1,23 +1,58 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase
-from core.config import settings
+import aiosqlite
+import os
 
-engine = create_async_engine(settings.DATABASE_URL, echo=False)
-AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
-
-
-class Base(DeclarativeBase):
-    pass
-
-
-async def get_db():
-    async with AsyncSessionLocal() as session:
-        yield session
+DATABASE_PATH = os.getenv("DATABASE_PATH", "data/ilantakip.db")
 
 
 async def init_db():
-    import os
-    os.makedirs("data", exist_ok=True)
-    async with engine.begin() as conn:
-        from models import tables  # noqa - register all models
-        await conn.run_sync(Base.metadata.create_all)
+    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                hashed_password TEXT NOT NULL,
+                fcm_token TEXT,
+                telegram_chat_id TEXT,
+                notifications_enabled INTEGER DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS watchlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                product_id INTEGER,
+                search_url TEXT,
+                search_name TEXT,
+                keywords TEXT,
+                min_price REAL,
+                max_price REAL,
+                target_price REAL,
+                platforms TEXT,
+                active INTEGER DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        await db.commit()
+
+
+async def db_fetch(sql: str, params: tuple = ()) -> list[dict]:
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+
+async def db_execute(sql: str, params: tuple = ()) -> int:
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(sql, params)
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_db():
+    """FastAPI dependency — artık kullanılmıyor ama uyumluluk için bırakıldı."""
+    yield None
