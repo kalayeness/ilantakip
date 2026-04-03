@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 HEADERS_LIST = [
     {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
         "Accept-Encoding": "gzip, deflate, br",
@@ -22,7 +22,7 @@ HEADERS_LIST = [
         "Cache-Control": "max-age=0",
     },
     {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "tr-TR,tr;q=0.8,en;q=0.5",
         "Accept-Encoding": "gzip, deflate, br",
@@ -45,13 +45,12 @@ def normalize_url(url: str) -> str:
     """Sayfalama offset'ini kaldır ama pagingSize'ı koru."""
     parsed = urlparse(url)
     params = parse_qs(parsed.query, keep_blank_values=True)
-    params.pop("pagingOffset", None)  # Her zaman ilk sayfadan başla
+    params.pop("pagingOffset", None)
     new_query = urlencode({k: v[0] for k, v in params.items()})
     return urlunparse(parsed._replace(query=new_query))
 
 
 def make_page_url(base_url: str, offset: int) -> str:
-    """Sayfa URL'si oluştur — pagingSize URL'den gelir, sadece offset değişir."""
     parsed = urlparse(base_url)
     params = parse_qs(parsed.query, keep_blank_values=True)
     params["pagingOffset"] = [str(offset)]
@@ -59,19 +58,43 @@ def make_page_url(base_url: str, offset: int) -> str:
     return urlunparse(parsed._replace(query=new_query))
 
 
-def fetch_listings(url: str, max_pages: int = 5) -> list[dict]:
-    """Sahibinden.com'dan birden fazla sayfa ilanı çek."""
+def _is_blocked_or_error(html: str, response) -> bool:
+    """Sayfanın engellenip engellenmediğini ya da hata olup olmadığını kontrol et."""
+    if response.status_code in (403, 503, 429):
+        return True
+    if len(html) < 1500:
+        return True
+    soup = BeautifulSoup(html, "html.parser")
+    title = (soup.title.string or "").lower() if soup.title else ""
+    if any(w in title for w in ["403", "captcha", "robot", "hata", "error", "engel"]):
+        return True
+    # Giriş sayfasına yönlendirme
+    if soup.find("input", {"name": re.compile(r"password|sifre", re.I)}):
+        return True
+    return False
+
+
+def fetch_listings(url: str, max_pages: int = 5) -> list[dict] | None:
+    """
+    Sahibinden.com'dan ilanları çek.
+    Returns:
+        None  → bağlantı hatası / engellendi (bot "hata" olarak işlemeli)
+        []    → sayfa açıldı ama ilan bulunamadı
+        [..] → başarılı
+    """
     base_url = normalize_url(url)
     headers = random.choice(HEADERS_LIST)
     all_listings = []
 
-    # URL'deki pagingSize'ı oku, yoksa 20 varsay
     parsed_params = parse_qs(urlparse(url).query)
     page_size = int(parsed_params.get("pagingSize", ["20"])[0])
 
     try:
         session = requests.Session()
-        session.get(SAHIBINDEN_BASE, headers=headers, timeout=15)
+        try:
+            session.get(SAHIBINDEN_BASE, headers=headers, timeout=15)
+        except Exception:
+            pass  # Ana sayfa alınamazsa devam et
         time.sleep(random.uniform(1, 2))
 
         for page in range(max_pages):
@@ -80,17 +103,27 @@ def fetch_listings(url: str, max_pages: int = 5) -> list[dict]:
 
             try:
                 response = session.get(page_url, headers=headers, timeout=20)
-                response.raise_for_status()
-            except requests.exceptions.HTTPError as e:
-                if e.response.status_code == 403:
-                    logger.warning(f"Sayfa {page + 1}: Erişim engellendi (403).")
-                elif e.response.status_code == 503:
-                    logger.warning(f"Sayfa {page + 1}: Geçici olarak kullanılamıyor (503).")
-                else:
-                    logger.error(f"Sayfa {page + 1} HTTP hatası: {e}")
-                break
+            except requests.exceptions.ConnectionError:
+                logger.error("Bağlantı hatası.")
+                return None
+            except requests.exceptions.Timeout:
+                logger.error("Zaman aşımı.")
+                return None
+
+            if _is_blocked_or_error(response.text, response):
+                logger.warning(f"Sayfa {page + 1}: Engellendi veya hata (status={response.status_code}).")
+                if page == 0:
+                    return None  # İlk sayfa engellenirse hata döndür
+                break  # Sonraki sayfalarda engellenirse dur, eldekilerle devam et
 
             page_listings = parse_listings(response.text, page_url)
+
+            if page_listings is None:
+                # Parse hatası — ilk sayfada ise hata, sonrakinde dur
+                logger.warning(f"Sayfa {page + 1}: Parse başarısız.")
+                if page == 0:
+                    return None
+                break
 
             if not page_listings:
                 logger.info(f"Sayfa {page + 1}: İlan yok, durduruldu.")
@@ -99,65 +132,158 @@ def fetch_listings(url: str, max_pages: int = 5) -> list[dict]:
             all_listings.extend(page_listings)
             logger.info(f"Sayfa {page + 1}: {len(page_listings)} ilan, toplam: {len(all_listings)}")
 
-            # Son sayfaya ulaşıldıysa dur
             if len(page_listings) < page_size:
                 logger.info("Son sayfaya ulaşıldı.")
                 break
 
-            # Sayfalar arası bekleme (rate limit için)
             if page < max_pages - 1:
                 time.sleep(random.uniform(1.5, 3))
 
         return all_listings
 
-    except requests.exceptions.ConnectionError:
-        logger.error("Bağlantı hatası.")
-        return []
-    except requests.exceptions.Timeout:
-        logger.error("Zaman aşımı.")
-        return []
     except Exception as e:
         logger.error(f"Beklenmeyen hata: {e}")
-        return []
+        return None
 
 
-def parse_listings(html: str, base_url: str) -> list[dict]:
-    """HTML'den ilan bilgilerini parse et."""
+def parse_listings(html: str, base_url: str) -> list[dict] | None:
+    """
+    HTML'den ilan listesini parse et.
+    Returns:
+        None  → sayfa yapısı tanınamadı (muhtemelen hata/engel sayfası)
+        []    → geçerli sayfa ama ilan yok
+        [..] → ilanlar
+    """
     soup = BeautifulSoup(html, "html.parser")
+
+    # --- Yöntem 1: Standart arama sonuçları tablosu ---
+    table = (
+        soup.find("table", {"class": re.compile(r"searchResultsTable|result-list")}) or
+        soup.find("table", id="searchResultsTable")
+    )
+    if table:
+        rows = table.find_all("tr", {"class": re.compile(r"searchResultsItem|.*result.*")})
+        listings = []
+        for row in rows:
+            try:
+                listing = _parse_table_row(row)
+                if listing:
+                    listings.append(listing)
+            except Exception as e:
+                logger.debug(f"Satır parse hatası: {e}")
+        logger.info(f"Tablo parser: {len(listings)} ilan — {base_url[:60]}")
+        return listings
+
+    # --- Yöntem 2: Galeri / vitrin / kart görünümü ---
+    gallery_listings = _parse_gallery(soup, base_url)
+    if gallery_listings is not None:
+        return gallery_listings
+
+    # --- Sayfa sahibinden'e ait mi kontrol et ---
+    if not _looks_like_sahibinden(soup):
+        logger.warning(f"Sahibinden sayfası tanınamadı: {base_url[:60]}")
+        return None
+
+    logger.info(f"Geçerli sayfa ama ilan yok: {base_url[:60]}")
+    return []
+
+
+def _looks_like_sahibinden(soup) -> bool:
+    """Sayfanın gerçekten sahibinden.com sayfası olup olmadığını kontrol et."""
+    # Meta, link veya script içinde sahibinden referansı
+    for tag in soup.find_all(["meta", "link", "script"], limit=30):
+        content = str(tag)
+        if "sahibinden" in content.lower():
+            return True
+    # Başlık kontrolü
+    title = (soup.title.string or "").lower() if soup.title else ""
+    return "sahibinden" in title
+
+
+def _parse_gallery(soup, base_url: str) -> list[dict] | None:
+    """Galeri/vitrin/kart görünümü için ilan parse et."""
+    seen_ids: set[str] = set()
     listings = []
 
-    # Sahibinden.com'un listing tablosu
-    table = soup.find("table", {"class": re.compile(r"searchResultsTable|result-list")})
-    if not table:
-        # Alternatif selector dene
-        table = soup.find("table", id="searchResultsTable")
-
-    if not table:
-        logger.warning("İlan tablosu bulunamadı. Sayfa yapısı değişmiş olabilir.")
-        logger.debug(f"Sayfa başlığı: {soup.title.string if soup.title else 'Yok'}")
-        return []
-
-    rows = table.find_all("tr", {"class": re.compile(r"searchResultsItem|.*result.*")})
-
-    for row in rows:
-        try:
-            listing = parse_row(row)
-            if listing:
-                listings.append(listing)
-        except Exception as e:
-            logger.debug(f"Satır parse hatası: {e}")
+    # --- Yöntem A: data-id attribute taşıyan herhangi bir element ---
+    candidates = soup.find_all(attrs={"data-id": re.compile(r"^\d+$")})
+    for elem in candidates:
+        listing_id = elem.get("data-id", "").strip()
+        if not listing_id or listing_id in seen_ids:
             continue
+        seen_ids.add(listing_id)
 
-    logger.info(f"{len(listings)} ilan bulundu: {base_url[:60]}...")
-    return listings
+        link = (
+            elem.find("a", href=re.compile(r"/ilan/")) or
+            elem.find("a", class_=re.compile(r"classifiedTitle|title", re.I)) or
+            elem.find("a", href=True)
+        )
+        title = ""
+        listing_url = ""
+        if link:
+            title = link.get("title") or link.get_text(strip=True)
+            href = link.get("href", "")
+            listing_url = SAHIBINDEN_BASE + href if href.startswith("/") else href
+
+        price_elem = elem.find(class_=re.compile(r"price|fiyat", re.I))
+        price = price_elem.get_text(strip=True) if price_elem else "Belirtilmemiş"
+
+        location_elem = elem.find(class_=re.compile(r"location|konum|city|sehir", re.I))
+        location = location_elem.get_text(strip=True) if location_elem else ""
+
+        date_elem = elem.find(class_=re.compile(r"date|tarih", re.I))
+        date = date_elem.get_text(strip=True) if date_elem else ""
+
+        listings.append({
+            "id": listing_id,
+            "title": title or "Başlık yok",
+            "description": "",
+            "price": price,
+            "location": location,
+            "url": listing_url,
+            "date": date,
+        })
+
+    if listings:
+        logger.info(f"Galeri parser (data-id): {len(listings)} ilan — {base_url[:60]}")
+        return listings
+
+    # --- Yöntem B: /ilan/ URL pattern içeren tüm linkler ---
+    for link in soup.find_all("a", href=re.compile(r"/ilan/")):
+        href = link.get("href", "")
+        id_match = re.search(r"/(\d{6,})", href)  # En az 6 haneli ID
+        if not id_match:
+            continue
+        listing_id = id_match.group(1)
+        if listing_id in seen_ids:
+            continue
+        seen_ids.add(listing_id)
+
+        title = link.get("title") or link.get_text(strip=True)
+        listing_url = SAHIBINDEN_BASE + href if href.startswith("/") else href
+
+        listings.append({
+            "id": listing_id,
+            "title": title or "Başlık yok",
+            "description": "",
+            "price": "Belirtilmemiş",
+            "location": "",
+            "url": listing_url,
+            "date": "",
+        })
+
+    if listings:
+        logger.info(f"Galeri parser (/ilan/ links): {len(listings)} ilan — {base_url[:60]}")
+        return listings
+
+    # Hiçbir yöntem sonuç vermedi — sayfa sahibinden ama ilan yok
+    return None
 
 
-def parse_row(row) -> dict | None:
-    """Tek bir ilan satırını parse et."""
-    # İlan ID'sini al
+def _parse_table_row(row) -> dict | None:
+    """Tek bir ilan satırını parse et (tablo görünümü)."""
     listing_id = row.get("data-id") or row.get("id", "")
     if not listing_id:
-        # class içinden id bulmaya çalış
         link = row.find("a", href=re.compile(r"/ilan/"))
         if link:
             match = re.search(r"/(\d+)$", link.get("href", ""))
@@ -167,7 +293,6 @@ def parse_row(row) -> dict | None:
     if not listing_id or listing_id == "searchResultsTable":
         return None
 
-    # Başlık
     title_elem = (
         row.find("td", {"class": re.compile(r"searchResultsTitleValue|title")}) or
         row.find("a", {"class": re.compile(r"classifiedTitle|title")})
@@ -181,22 +306,18 @@ def parse_row(row) -> dict | None:
             href = link.get("href", "")
             listing_url = SAHIBINDEN_BASE + href if href.startswith("/") else href
 
-    # Fiyat
     price_elem = row.find("td", {"class": re.compile(r"searchResultsPriceValue|price")})
     price = price_elem.get_text(strip=True) if price_elem else "Belirtilmemiş"
 
-    # Konum
     location_elem = row.find("td", {"class": re.compile(r"searchResultsLocationValue|location")})
     location = ""
     if location_elem:
-        location_parts = [span.get_text(strip=True) for span in location_elem.find_all("span")]
-        location = " / ".join(filter(None, location_parts)) or location_elem.get_text(strip=True)
+        parts = [s.get_text(strip=True) for s in location_elem.find_all("span")]
+        location = " / ".join(filter(None, parts)) or location_elem.get_text(strip=True)
 
-    # Tarih
     date_elem = row.find("td", {"class": re.compile(r"searchResultsDateValue|date")})
     date = date_elem.get_text(strip=True) if date_elem else ""
 
-    # Açıklama snippet'i (arama sonuçlarında varsa)
     desc_elem = row.find("td", {"class": re.compile(r"searchResultsTagAttributeValue|description|snippet")})
     description = desc_elem.get_text(" ", strip=True) if desc_elem else ""
 
@@ -226,14 +347,8 @@ def apply_local_filters(
     min_price: int | None = None,
     max_price: int | None = None,
 ) -> list[dict]:
-    """
-    İlanları anahtar kelime ve fiyat filtrelerine göre filtrele.
-    keywords: virgülle ayrılmış kelimeler (örn: 'gök mavisi, uzay grisi')
-    Kelimelerden EN AZ BİRİ başlıkta geçiyorsa ilan dahil edilir.
-    """
     result = listings
 
-    # Anahtar kelime filtresi
     if keywords and keywords.strip():
         keyword_list = [k.strip().lower() for k in keywords.split(",") if k.strip()]
         if keyword_list:
@@ -244,13 +359,11 @@ def apply_local_filters(
                     filtered.append(listing)
             result = filtered
 
-    # Fiyat filtresi
     if min_price is not None or max_price is not None:
         filtered = []
         for listing in result:
             price_val = parse_price_value(listing["price"])
             if price_val is None:
-                # Fiyatı çözülemeyenleri dahil et
                 filtered.append(listing)
                 continue
             if min_price is not None and price_val < min_price:
@@ -264,10 +377,9 @@ def apply_local_filters(
 
 
 def format_listing_message(listing: dict, filter_name: str) -> str:
-    """İlan bilgisini Telegram mesajı formatına çevir."""
     lines = [
-        f"🏠 *Yeni İlan - {filter_name}*",
-        f"",
+        f"🔔 *Yeni İlan — {filter_name}*",
+        "",
         f"📌 {listing['title']}",
         f"💰 {listing['price']}",
     ]
@@ -276,7 +388,6 @@ def format_listing_message(listing: dict, filter_name: str) -> str:
     if listing.get("date"):
         lines.append(f"📅 {listing['date']}")
     if listing.get("url"):
-        lines.append(f"")
+        lines.append("")
         lines.append(f"🔗 [İlana Git]({listing['url']})")
-
     return "\n".join(lines)

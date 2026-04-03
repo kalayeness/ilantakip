@@ -142,6 +142,19 @@ async def mark_listings_seen(filter_id: int, listings: list[dict]):
         await db.commit()
 
 
+async def update_filter_field(filter_id: int, user_id: int, field: str, value) -> bool:
+    ALLOWED_FIELDS = {"name", "url", "keywords", "min_price", "max_price", "category_filters"}
+    if field not in ALLOWED_FIELDS:
+        return False
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            f"UPDATE filters SET {field} = ? WHERE id = ? AND user_id = ?",
+            (value, filter_id, user_id)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
 async def toggle_notifications(user_id: int, enabled: bool):
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute(

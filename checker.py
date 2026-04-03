@@ -6,10 +6,13 @@ import config
 logger = logging.getLogger(__name__)
 
 
-async def check_filter(filter_record: dict) -> list[dict]:
+async def check_filter(filter_record: dict) -> list[dict] | None:
     """
     Tek bir filtre için yeni ilanları kontrol et.
-    Yeni ilanların listesini döndürür.
+    Returns:
+        None  → fetch başarısız (bağlantı hatası / engellendi)
+        []    → başarılı ama yeni ilan yok
+        [..] → yeni ilanlar
     """
     filter_id = filter_record["id"]
     filter_name = filter_record["name"]
@@ -17,47 +20,37 @@ async def check_filter(filter_record: dict) -> list[dict]:
 
     logger.info(f"Filtre kontrol ediliyor: '{filter_name}' (ID: {filter_id})")
 
-    # Mevcut ilanları çek (tüm sayfalar)
     current_listings = fetch_listings(url, max_pages=config.MAX_PAGES)
-    if not current_listings:
-        logger.info(f"Filtre '{filter_name}': İlan listesi alınamadı veya boş.")
-        return []
 
-    # Local filtreler uygula (anahtar kelime + fiyat)
+    if current_listings is None:
+        logger.warning(f"Filtre '{filter_name}': İlan listesi alınamadı (bağlantı/engel sorunu).")
+        return None
+
     keywords = filter_record.get("keywords") or ""
     min_price = filter_record.get("min_price")
     max_price = filter_record.get("max_price")
     current_listings = apply_local_filters(current_listings, keywords, min_price, max_price)
 
-    # Daha önce görülen ilanları al
     seen_ids = await get_seen_listing_ids(filter_id)
-
-    # Yeni ilanları bul
     new_listings = [l for l in current_listings if l["id"] not in seen_ids]
 
-    # Tüm mevcut ilanları "görüldü" olarak işaretle
     await mark_listings_seen(filter_id, current_listings)
 
     if new_listings:
         logger.info(f"Filtre '{filter_name}': {len(new_listings)} yeni ilan bulundu.")
     else:
-        logger.info(f"Filtre '{filter_name}': Yeni ilan yok.")
+        logger.info(f"Filtre '{filter_name}': Yeni ilan yok. (Toplam taranan: {len(current_listings)})")
 
     return new_listings
 
 
 async def run_all_checks(bot) -> dict[int, dict]:
-    """
-    Tüm aktif filtreleri kontrol et.
-    Kullanıcı ID'sine göre sonuçları döndürür.
-    """
     filters = await get_all_active_filters()
 
     if not filters:
         logger.info("Aktif filtre bulunamadı.")
         return {}
 
-    # Kullanıcı bazında sonuçları grupla
     results: dict[int, dict] = {}
 
     for f in filters:
@@ -67,9 +60,11 @@ async def run_all_checks(bot) -> dict[int, dict]:
         new_listings = await check_filter(f)
 
         if user_id not in results:
-            results[user_id] = {"new": [], "no_new": []}
+            results[user_id] = {"new": [], "no_new": [], "error": []}
 
-        if new_listings:
+        if new_listings is None:
+            results[user_id]["error"].append(filter_name)
+        elif new_listings:
             results[user_id]["new"].append({
                 "filter_name": filter_name,
                 "listings": new_listings,
@@ -77,7 +72,6 @@ async def run_all_checks(bot) -> dict[int, dict]:
         else:
             results[user_id]["no_new"].append(filter_name)
 
-    # Telegram mesajlarını gönder
     for user_id, data in results.items():
         await send_check_results(bot, user_id, data)
 
@@ -85,14 +79,13 @@ async def run_all_checks(bot) -> dict[int, dict]:
 
 
 async def send_check_results(bot, user_id: int, data: dict):
-    """Kullanıcıya kontrol sonuçlarını bildir."""
     try:
         # Yeni ilanları bildir
         for filter_data in data["new"]:
             filter_name = filter_data["filter_name"]
             listings = filter_data["listings"]
 
-            for listing in listings[:10]:  # Fazla spam olmasın diye max 10
+            for listing in listings[:10]:
                 msg = format_listing_message(listing, filter_name)
                 await bot.send_message(
                     chat_id=user_id,
@@ -108,15 +101,17 @@ async def send_check_results(bot, user_id: int, data: dict):
                     parse_mode="Markdown",
                 )
 
-        # Yeni ilan olmayan filtreleri bildir
-        if data["no_new"]:
+        # Yeni ilan yok bildirimi
+        if data.get("no_new"):
             no_new_lines = [f"🔍 *{name}*: Yeni ilan yok" for name in data["no_new"]]
-            msg = "📊 *Kontrol Sonucu*\n\n" + "\n".join(no_new_lines)
             await bot.send_message(
                 chat_id=user_id,
-                text=msg,
+                text="📊 *Kontrol Sonucu*\n\n" + "\n".join(no_new_lines),
                 parse_mode="Markdown",
             )
+
+        # Hata bildirimi (opsiyonel — engel durumunda spam yapmasın diye sadece logluyoruz)
+        # Hata olan filtreler sessizce geçilir, kullanıcıya bildirim gönderilmez
 
     except Exception as e:
         logger.error(f"Kullanıcı {user_id}'e mesaj gönderilemedi: {e}")

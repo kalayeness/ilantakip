@@ -1,7 +1,7 @@
 import json
 import logging
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -17,11 +17,10 @@ from apscheduler.triggers.interval import IntervalTrigger
 import config
 from database import (
     init_db, upsert_user, add_filter, get_filters,
-    remove_filter, toggle_notifications,
+    remove_filter, toggle_notifications, update_filter_field,
 )
-from scraper import parse_price_value
+from scraper import parse_price_value, validate_sahibinden_url
 from checker import run_all_checks
-from scraper import validate_sahibinden_url
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -29,9 +28,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Konuşma durumları
+# Konuşma durumları — filtre ekleme
 (WAITING_FILTER_NAME, WAITING_FILTER_URL, WAITING_FILTER_KEYWORDS,
  WAITING_FILTER_PRICE, WAITING_CATEGORY, WAITING_CATEGORY_FILTER) = range(6)
+
+# Konuşma durumları — filtre düzenleme
+EDIT_SELECT, EDIT_FIELD, EDIT_VALUE = range(6, 9)
 
 # Geçici kullanıcı verisi
 user_states: dict[int, dict] = {}
@@ -111,54 +113,175 @@ CATEGORIES = {
 }
 
 
+def main_keyboard():
+    """Ana menü klavyesi — her zaman altta görünür."""
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("➕ Filtre Ekle"), KeyboardButton("📋 Filtrelerim")],
+            [KeyboardButton("🔍 Şimdi Kontrol Et"), KeyboardButton("✏️ Filtre Düzenle")],
+            [KeyboardButton("🗑 Filtre Sil"), KeyboardButton("❓ Yardım")],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Bir işlem seç...",
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await upsert_user(user.id, user.username or "", user.first_name or "")
 
     text = (
         f"👋 Merhaba *{user.first_name}*!\n\n"
-        f"Ben *İlan Takip Botu*'yum. Sahibinden.com'daki ilanları {config.CHECK_INTERVAL_MINUTES} dakikada "
-        f"bir kontrol eder ve yeni ilanları sana bildiririm.\n\n"
-        f"📋 *Komutlar:*\n"
-        f"/filtre\\_ekle — Yeni arama filtresi ekle\n"
-        f"/filtrelerim — Aktif filtrelerini listele\n"
-        f"/filtre\\_detay — Filtre detayını gör (tam URL, kelimeler, fiyat)\n"
-        f"/filtre\\_sil — Filtre sil\n"
-        f"/simdi\\_kontrol — Hemen kontrol et\n"
-        f"/bildirimleri\\_durdur — Bildirimleri durdur\n"
-        f"/bildirimleri\\_baslat — Bildirimleri başlat\n"
-        f"/yardim — Yardım mesajı\n\n"
-        f"🚀 Başlamak için /filtre\\_ekle komutunu kullan!"
+        f"Ben *İlan Takip Botu*'yum. Sahibinden.com'daki ilanları "
+        f"*{config.CHECK_INTERVAL_MINUTES} dakikada bir* kontrol ederim.\n\n"
+        f"Aşağıdaki butonları kullanabilirsin 👇"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_keyboard())
 
 
 async def yardim(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "📖 *Nasıl Kullanılır?*\n\n"
         "1️⃣ Sahibinden.com'a git\n"
-        "2️⃣ Arama filtrelerini ayarla (il, ilçe, fiyat, m² vb.)\n"
-        "3️⃣ Arama sonuçları sayfasının URL'sini kopyala\n"
-        "4️⃣ /filtre\\_ekle komutunu kullan ve URL'yi yapıştır\n\n"
-        "✅ Bot artık o filtreyle her "
-        f"{config.CHECK_INTERVAL_MINUTES} dakikada bir sahibinden.com'u kontrol eder!\n\n"
+        "2️⃣ Arama filtrelerini ayarla (il, fiyat, m² vb.)\n"
+        "3️⃣ Arama URL'sini kopyala (aşağıya bak 👇)\n"
+        "4️⃣ *➕ Filtre Ekle* butonuna bas ve URL'yi yapıştır\n\n"
+        "📱 *Mobilde URL nasıl alınır?*\n\n"
+        "• *Chrome / Safari:* Filtreleri ayarla → adres çubuğuna dokun → tümünü seç → kopyala\n"
+        "• *Sahibinden Uygulaması:* Arama yaptıktan sonra sağ üstteki *paylaş (⬆️)* butonuna bas → *Linki Kopyala*\n"
+        "• *Firefox:* Adres çubuğuna uzun bas → *URL'yi Kopyala*\n\n"
         "📌 *Örnek URL:*\n"
-        "`https://www.sahibinden.com/kiralik-daire/istanbul?`\n"
-        "`price_min=5000&price_max=15000`\n\n"
-        "⚠️ *Not:* Sahibinden.com zaman zaman bot erişimini engelleyebilir. "
-        "Bu durumda kontrol atlanır ve tekrar denenir."
+        "`https://www.sahibinden.com/kiralik-daire/istanbul?price_min=5000&price_max=15000`\n\n"
+        "✏️ *Filtre Düzenle:* Ekledikten sonra anahtar kelime, fiyat veya kategori bilgilerini değiştirebilirsin.\n\n"
+        "⚠️ *Not:* Sahibinden.com zaman zaman bota erişimi engelleyebilir — bu durumda kontrol sessizce atlanır."
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_keyboard())
+
+
+async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Alt menü butonlarını komutlara yönlendir."""
+    text = update.message.text
+    if text == "➕ Filtre Ekle":
+        return await filtre_ekle_baslat(update, context)
+    elif text == "📋 Filtrelerim":
+        return await filtrelerim(update, context)
+    elif text == "🔍 Şimdi Kontrol Et":
+        return await simdi_kontrol(update, context)
+    elif text == "✏️ Filtre Düzenle":
+        return await filtre_duzenle_baslat(update, context)
+    elif text == "🗑 Filtre Sil":
+        return await filtre_sil(update, context)
+    elif text == "❓ Yardım":
+        return await yardim(update, context)
 
 
 async def filtre_ekle_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_states[user_id] = {"category_filters": {}}
     await update.message.reply_text(
-        "📝 Filtren için bir isim gir:\n_(örn: Kırmızı Ferrari, MacBook M2, İstanbul Kiralık)_",
+        "📝 Filtren için bir isim gir:\n_(örn: Kırmızı Ferrari, MacBook M2, İstanbul Kiralık)_\n\n"
+        "İptal için /iptal",
         parse_mode="Markdown",
     )
     return WAITING_FILTER_NAME
+
+
+# --- Geri gitme yardımcı fonksiyonları ---
+
+async def _reask_name(update: Update, user_id: int):
+    await update.message.reply_text(
+        "📝 Filtren için bir isim gir:\n_(örn: Kırmızı Ferrari, MacBook M2, İstanbul Kiralık)_\n\nİptal için /iptal",
+        parse_mode="Markdown",
+    )
+    return WAITING_FILTER_NAME
+
+
+async def _reask_category(update: Update, user_id: int):
+    keyboard = []
+    row = []
+    for key, cat in CATEGORIES.items():
+        row.append(InlineKeyboardButton(cat["label"], callback_data=f"cat_{key}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    await update.message.reply_text(
+        "📂 Kategori seç:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return WAITING_CATEGORY
+
+
+async def _reask_url(update: Update, user_id: int):
+    await update.message.reply_text(
+        "🔗 Sahibinden.com arama URL'sini yapıştır:\n"
+        "_(Filtreleri ayarlayıp adres çubuğundaki URL'yi kopyala)_\n\n"
+        "İptal için /iptal",
+        parse_mode="Markdown",
+    )
+    return WAITING_FILTER_URL
+
+
+async def _reask_keywords(update: Update, user_id: int):
+    await update.message.reply_text(
+        "🎨 *Anahtar kelime filtresi* _(isteğe bağlı)_\n\n"
+        "İlan başlığında aranacak kelimeleri virgülle yaz:\n"
+        "_(örn: `kırmızı, metalik, full paket`)_\n\n"
+        "Atlamak için `-` yaz | İptal için /iptal",
+        parse_mode="Markdown",
+    )
+    return WAITING_FILTER_KEYWORDS
+
+
+# --- Geri gitme işleyicileri ---
+
+async def geri_from_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_states.get(user_id, {}).pop("category", None)
+    return await _reask_name(update, user_id)
+
+
+async def geri_from_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_states.get(user_id, {}).pop("url", None)
+    return await _reask_category(update, user_id)
+
+
+async def geri_from_cat_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    state = user_states.get(user_id, {})
+    idx = state.get("cat_filter_index", 0)
+    if idx <= 0:
+        state.pop("url", None)
+        return await _reask_url(update, user_id)
+    idx -= 1
+    state["cat_filter_index"] = idx
+    cat_key = state.get("category", "genel")
+    cat_filter_defs = CATEGORIES.get(cat_key, {}).get("filters", [])
+    if idx < len(cat_filter_defs):
+        state["category_filters"].pop(cat_filter_defs[idx]["key"], None)
+    return await _ask_next_category_filter(update, user_id, context)
+
+
+async def geri_from_keywords(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    state = user_states.get(user_id, {})
+    state.pop("keywords", None)
+    cat_key = state.get("category", "genel")
+    cat_filters = CATEGORIES.get(cat_key, {}).get("filters", [])
+    if cat_filters:
+        idx = len(cat_filters) - 1
+        state["cat_filter_index"] = idx
+        state["category_filters"].pop(cat_filters[idx]["key"], None)
+        return await _ask_next_category_filter(update, user_id, context)
+    return await _reask_url(update, user_id)
+
+
+async def geri_from_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_states.get(user_id, {}).pop("keywords", None)
+    return await _reask_keywords(update, user_id)
 
 
 async def filtre_isim_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -355,14 +478,215 @@ async def filtre_price_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"💰 Fiyat: {fiyat_str}")
     lines.append(f"\nBot her {config.CHECK_INTERVAL_MINUTES} dakikada bir kontrol edecek.")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown",
+                                    reply_markup=main_keyboard())
     return ConversationHandler.END
 
 
 async def filtre_ekle_iptal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_states.pop(user_id, None)
-    await update.message.reply_text("❌ Filtre ekleme iptal edildi.")
+    await update.message.reply_text("❌ Filtre ekleme iptal edildi.", reply_markup=main_keyboard())
+    return ConversationHandler.END
+
+
+# ─── Filtre Düzenleme ────────────────────────────────────────────────────────
+
+async def filtre_duzenle_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    await upsert_user(user_id, update.effective_user.username or "", update.effective_user.first_name or "")
+    filters_list = await get_filters(user_id)
+
+    if not filters_list:
+        await update.message.reply_text(
+            "📭 Düzenlenecek aktif filtren yok.\n➕ Filtre Ekle butonunu kullan!",
+            reply_markup=main_keyboard(),
+        )
+        return ConversationHandler.END
+
+    keyboard = []
+    for f in filters_list:
+        cat_label = CATEGORIES.get(f.get("category", "genel"), CATEGORIES["genel"])["label"]
+        keyboard.append([InlineKeyboardButton(
+            f"✏️ {f['name']}  [{cat_label}]  (ID:{f['id']})",
+            callback_data=f"edit_{f['id']}"
+        )])
+    keyboard.append([InlineKeyboardButton("❌ İptal", callback_data="edit_cancel")])
+
+    await update.message.reply_text(
+        "Hangi filtreyi düzenlemek istiyorsun?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return EDIT_SELECT
+
+
+async def edit_select_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    if query.data == "edit_cancel":
+        await query.edit_message_text("❌ İptal edildi.")
+        return ConversationHandler.END
+
+    filter_id = int(query.data.replace("edit_", ""))
+    filters_list = await get_filters(user_id)
+    target = next((f for f in filters_list if f["id"] == filter_id), None)
+    if not target:
+        await query.edit_message_text("❌ Filtre bulunamadı.")
+        return ConversationHandler.END
+
+    context.user_data["edit_filter"] = target
+
+    cat_key = target.get("category", "genel")
+    keyboard = [
+        [InlineKeyboardButton("📌 İsim", callback_data="field_name")],
+        [InlineKeyboardButton("🎨 Anahtar Kelimeler", callback_data="field_keywords")],
+        [InlineKeyboardButton("💰 Fiyat Aralığı", callback_data="field_price")],
+    ]
+    for cf in CATEGORIES.get(cat_key, {}).get("filters", []):
+        keyboard.append([InlineKeyboardButton(
+            f"   • {cf['label']}", callback_data=f"field_cat_{cf['key']}"
+        )])
+    keyboard.append([InlineKeyboardButton("❌ İptal", callback_data="field_cancel")])
+
+    await query.edit_message_text(
+        f"✏️ *{target['name']}* — ne düzenlemek istiyorsun?",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return EDIT_FIELD
+
+
+async def edit_field_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "field_cancel":
+        await query.edit_message_text("❌ İptal edildi.")
+        return ConversationHandler.END
+
+    field = query.data.replace("field_", "")
+    context.user_data["edit_field"] = field
+    target = context.user_data["edit_filter"]
+
+    if field == "name":
+        current = target.get("name", "")
+        await query.edit_message_text(
+            f"📌 Yeni isim gir:\n_(Mevcut: {current})_\n\nİptal için /iptal",
+            parse_mode="Markdown",
+        )
+    elif field == "keywords":
+        current = target.get("keywords") or "Yok"
+        await query.edit_message_text(
+            f"🎨 Yeni anahtar kelimeler gir (virgülle ayır):\n_(Mevcut: {current})_\n\n"
+            "Temizlemek için `-` yaz | İptal için /iptal",
+            parse_mode="Markdown",
+        )
+    elif field == "price":
+        mn, mx = target.get("min_price"), target.get("max_price")
+        current = (f"{mn:,} - {mx:,} TL" if mn and mx else
+                   f"Max {mx:,} TL" if mx else
+                   f"Min {mn:,} TL" if mn else "Yok")
+        await query.edit_message_text(
+            f"💰 Yeni fiyat aralığı:\n_(Mevcut: {current})_\n\n"
+            "Örn: `35000` veya `10000-35000`\nTemizlemek için `-` | İptal için /iptal",
+            parse_mode="Markdown",
+        )
+    elif field.startswith("cat_"):
+        cat_key_field = field[4:]
+        cat_key = target.get("category", "genel")
+        cf_def = next((cf for cf in CATEGORIES.get(cat_key, {}).get("filters", [])
+                       if cf["key"] == cat_key_field), None)
+        try:
+            current = json.loads(target.get("category_filters") or "{}").get(cat_key_field, "Yok")
+        except Exception:
+            current = "Yok"
+        label = cf_def["label"] if cf_def else cat_key_field
+        hint = cf_def["hint"] if cf_def else ""
+        await query.edit_message_text(
+            f"*{label}* için yeni değer:\n_{hint}_\n_(Mevcut: {current})_\n\n"
+            "Temizlemek için `-` | İptal için /iptal",
+            parse_mode="Markdown",
+        )
+
+    return EDIT_VALUE
+
+
+async def edit_value_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    target = context.user_data.get("edit_filter", {})
+    field = context.user_data.get("edit_field", "")
+    filter_id = target.get("id")
+
+    if field == "name":
+        if len(text) < 2 or len(text) > 50:
+            await update.message.reply_text("❌ İsim 2-50 karakter olmalı. Tekrar dene:")
+            return EDIT_VALUE
+        await update_filter_field(filter_id, user_id, "name", text)
+        await update.message.reply_text(f"✅ İsim güncellendi: *{text}*",
+                                        parse_mode="Markdown", reply_markup=main_keyboard())
+
+    elif field == "keywords":
+        new_val = "" if text == "-" else text
+        await update_filter_field(filter_id, user_id, "keywords", new_val)
+        await update.message.reply_text(
+            f"✅ Anahtar kelimeler: `{new_val or 'temizlendi'}`",
+            parse_mode="Markdown", reply_markup=main_keyboard(),
+        )
+
+    elif field == "price":
+        if text == "-":
+            await update_filter_field(filter_id, user_id, "min_price", None)
+            await update_filter_field(filter_id, user_id, "max_price", None)
+            await update.message.reply_text("✅ Fiyat filtresi temizlendi.",
+                                            reply_markup=main_keyboard())
+        else:
+            min_p, max_p = None, None
+            if "-" in text:
+                parts = text.split("-", 1)
+                min_p = parse_price_value(parts[0]) if parts[0].strip() else None
+                max_p = parse_price_value(parts[1]) if parts[1].strip() else None
+            else:
+                max_p = parse_price_value(text)
+            if min_p is None and max_p is None:
+                await update.message.reply_text(
+                    "❌ Geçersiz format. Örn: `35000` veya `10000-35000`\nTemizlemek için `-`",
+                    parse_mode="Markdown",
+                )
+                return EDIT_VALUE
+            await update_filter_field(filter_id, user_id, "min_price", min_p)
+            await update_filter_field(filter_id, user_id, "max_price", max_p)
+            fiyat_str = (f"{min_p or 0:,} - {max_p:,} TL" if max_p else f"{min_p:,}+ TL")
+            await update.message.reply_text(f"✅ Fiyat güncellendi: {fiyat_str}",
+                                            reply_markup=main_keyboard())
+
+    elif field.startswith("cat_"):
+        cat_key_field = field[4:]
+        try:
+            cat_filters_data = json.loads(target.get("category_filters") or "{}")
+        except Exception:
+            cat_filters_data = {}
+        if text == "-":
+            cat_filters_data.pop(cat_key_field, None)
+            msg = "✅ Alan temizlendi."
+        else:
+            cat_filters_data[cat_key_field] = text
+            msg = f"✅ Güncellendi: `{text}`"
+        await update_filter_field(filter_id, user_id, "category_filters",
+                                  json.dumps(cat_filters_data, ensure_ascii=False))
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=main_keyboard())
+
+    context.user_data.pop("edit_filter", None)
+    context.user_data.pop("edit_field", None)
+    return ConversationHandler.END
+
+
+async def edit_iptal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("edit_filter", None)
+    context.user_data.pop("edit_field", None)
+    await update.message.reply_text("❌ Düzenleme iptal edildi.", reply_markup=main_keyboard())
     return ConversationHandler.END
 
 
@@ -588,37 +912,68 @@ async def run_bot():
 
     # Filtre ekleme konuşma işleyicisi
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("filtre_ekle", filtre_ekle_baslat)],
+        entry_points=[
+            CommandHandler("filtre_ekle", filtre_ekle_baslat),
+            MessageHandler(filters.Regex(r"^➕ Filtre Ekle$"), filtre_ekle_baslat),
+        ],
         states={
             WAITING_FILTER_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, filtre_isim_al)
+                CommandHandler("geri", filtre_ekle_baslat),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, filtre_isim_al),
             ],
             WAITING_CATEGORY: [
-                CallbackQueryHandler(kategori_sec_callback, pattern=r"^cat_")
+                CommandHandler("geri", geri_from_category),
+                CallbackQueryHandler(kategori_sec_callback, pattern=r"^cat_"),
             ],
             WAITING_FILTER_URL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, filtre_url_al)
+                CommandHandler("geri", geri_from_url),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, filtre_url_al),
             ],
             WAITING_CATEGORY_FILTER: [
+                CommandHandler("geri", geri_from_cat_filter),
                 CommandHandler("atla", kategori_filtre_al),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, kategori_filtre_al)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, kategori_filtre_al),
             ],
             WAITING_FILTER_KEYWORDS: [
+                CommandHandler("geri", geri_from_keywords),
                 CommandHandler("atla", filtre_keywords_al),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, filtre_keywords_al)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, filtre_keywords_al),
             ],
             WAITING_FILTER_PRICE: [
+                CommandHandler("geri", geri_from_price),
                 CommandHandler("atla", filtre_price_al),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, filtre_price_al)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, filtre_price_al),
             ],
         },
         fallbacks=[CommandHandler("iptal", filtre_ekle_iptal)],
+    )
+
+    # Filtre düzenleme konuşma işleyicisi
+    edit_conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("filtre_duzenle", filtre_duzenle_baslat),
+            MessageHandler(filters.Regex(r"^✏️ Filtre Düzenle$"), filtre_duzenle_baslat),
+        ],
+        states={
+            EDIT_SELECT: [
+                CallbackQueryHandler(edit_select_callback, pattern=r"^edit_"),
+            ],
+            EDIT_FIELD: [
+                CallbackQueryHandler(edit_field_callback, pattern=r"^field_"),
+            ],
+            EDIT_VALUE: [
+                CommandHandler("iptal", edit_iptal),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_value_al),
+            ],
+        },
+        fallbacks=[CommandHandler("iptal", edit_iptal)],
     )
 
     # Komutları ekle
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("yardim", yardim))
     application.add_handler(conv_handler)
+    application.add_handler(edit_conv_handler)
     application.add_handler(CommandHandler("filtrelerim", filtrelerim))
     application.add_handler(CommandHandler("filtre_detay", filtre_detay))
     application.add_handler(CommandHandler("filtre_sil", filtre_sil))
@@ -626,6 +981,12 @@ async def run_bot():
     application.add_handler(CommandHandler("bildirimleri_durdur", bildirimleri_durdur))
     application.add_handler(CommandHandler("bildirimleri_baslat", bildirimleri_baslat))
     application.add_handler(CallbackQueryHandler(filtre_sil_callback, pattern=r"^del_"))
+    # Alt menü butonları (ConversationHandler'ların dışındaki butonlar için)
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND &
+        filters.Regex(r"^(📋 Filtrelerim|🔍 Şimdi Kontrol Et|🗑 Filtre Sil|❓ Yardım)$"),
+        menu_button_handler,
+    ))
 
     # Zamanlanmış kontrol - APScheduler
     scheduler = AsyncIOScheduler()
