@@ -1,7 +1,9 @@
 import aiosqlite
 import os
 
-DATABASE_PATH = os.getenv("DATABASE_PATH", "data/ilantakip.db")
+# Backend klasörünün bir üstündeki data/ klasörü — Telegram botu ile aynı DB
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATABASE_PATH = os.getenv("DATABASE_PATH", os.path.join(BASE_DIR, "data", "ilantakip.db"))
 
 
 async def init_db():

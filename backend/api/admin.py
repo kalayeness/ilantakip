@@ -1,11 +1,13 @@
+import os
 import aiosqlite
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-# Telegram botunun veritabanı yolu
-BOT_DB_PATH = "../data/ilantakip.db"
+# Telegram botunun veritabanı — her zaman sabit mutlak yol
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BOT_DB_PATH = os.path.join(BASE_DIR, "data", "ilantakip.db")
 
 
 async def bot_db_query(sql: str, params: tuple = ()) -> list[dict]:
