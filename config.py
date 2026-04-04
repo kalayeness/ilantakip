@@ -13,6 +13,7 @@ PAGE_SIZE = int(os.getenv("PAGE_SIZE", "50"))
 # Veritabanı her zaman bot.py'nin yanındaki data/ klasöründe
 DATABASE_PATH = os.getenv("DATABASE_PATH", os.path.join(BASE_DIR, "data", "ilantakip.db"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+SCRAPERAPI_KEY = os.getenv("SCRAPERAPI_KEY", "").strip()
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN ortam değişkeni ayarlanmamış!")

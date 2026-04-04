@@ -1,3 +1,4 @@
+import os
 import re
 import logging
 import time
@@ -7,6 +8,12 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 
 logger = logging.getLogger(__name__)
+
+# ScraperAPI anahtarı — config üzerinden .env'den okunur
+try:
+    from config import SCRAPERAPI_KEY as _SCRAPERAPI_KEY
+except Exception:
+    _SCRAPERAPI_KEY = os.getenv("SCRAPERAPI_KEY", "").strip()
 
 HEADERS_LIST = [
     {
@@ -236,6 +243,55 @@ const pw = require('{pw_pkg_js}');
         return None
 
 
+def _fetch_with_scraperapi(url: str) -> str | None:
+    """
+    ScraperAPI üzerinden sayfayı çek.
+    Rotating residential proxy + JS render ile sahibinden IP engeli ve Cloudflare'ı aşar.
+    Ücretsiz plan: 1000 istek/ay. render=true her istek 5 kredi sayılır (200 sayfa/ay).
+    """
+    key = _SCRAPERAPI_KEY
+    if not key:
+        return None
+
+    api_url = "http://api.scraperapi.com"
+    params = {
+        "api_key": key,
+        "url": url,
+        "render": "true",        # JS yüklemesi için
+        "country_code": "tr",    # Türkiye IP'si — sahibinden için daha iyi
+        "keep_headers": "false",
+    }
+
+    try:
+        logger.info(f"ScraperAPI ile çekiliyor: {url[:60]}")
+        response = requests.get(api_url, params=params, timeout=70)
+
+        if response.status_code == 200:
+            html = response.text
+            if len(html) > 2000:
+                logger.info(f"ScraperAPI başarılı: {len(html)} byte alındı.")
+                return html
+            else:
+                logger.warning(f"ScraperAPI çok kısa yanıt ({len(html)} byte).")
+                return None
+        elif response.status_code == 429:
+            logger.warning("ScraperAPI kota doldu (429).")
+            return None
+        elif response.status_code == 403:
+            logger.warning("ScraperAPI 403 — hedef site hâlâ engelledi.")
+            return None
+        else:
+            logger.warning(f"ScraperAPI beklenmedik durum: {response.status_code}")
+            return None
+
+    except requests.exceptions.Timeout:
+        logger.error("ScraperAPI zaman aşımı (70s).")
+        return None
+    except Exception as e:
+        logger.error(f"ScraperAPI hatası: {e}")
+        return None
+
+
 def _make_session(use_proxy: bool = False) -> tuple:
     headers = random.choice(HEADERS_LIST)
     session = requests.Session()
@@ -249,13 +305,25 @@ def _make_session(use_proxy: bool = False) -> tuple:
 def fetch_listings(url: str, max_pages: int = 5) -> list[dict] | None:
     """
     Sahibinden.com'dan ilanları çek.
-    Engellenirsе free-proxy ile otomatik tekrar dener (3 proxy dener).
+    Sıra: ScraperAPI → Playwright → direkt requests → proxy
     Returns:
         None  → engellenemedi / bağlantı hatası
         []    → sayfa açıldı ama ilan bulunamadı
         [..] → başarılı
     """
-    # Önce Playwright ile dene (Cloudflare'ı geçer)
+    # 1. ScraperAPI — rotating residential proxy + JS render (en güvenilir)
+    if _SCRAPERAPI_KEY:
+        html = _fetch_with_scraperapi(url)
+        if html:
+            listings = parse_listings(html, url)
+            if listings is not None:
+                logger.info(f"ScraperAPI başarılı: {len(listings)} ilan.")
+                return listings
+            logger.warning("ScraperAPI HTML alındı ama parse edilemedi — diğer yöntemler deneniyor.")
+        else:
+            logger.info("ScraperAPI başarısız — Playwright deneniyor.")
+
+    # 2. Playwright — Cloudflare JS challenge aşar
     logger.info(f"Playwright ile çekiliyor: {url[:60]}")
     html = _fetch_with_playwright(url)
     if html:
@@ -263,13 +331,13 @@ def fetch_listings(url: str, max_pages: int = 5) -> list[dict] | None:
         if listings is not None:
             return listings
 
-    # Playwright başarısız — direkt requests dene
+    # 3. Direkt requests
     logger.info("Playwright başarısız, direkt bağlantı deneniyor...")
     result = _fetch_with_session(url, max_pages, use_proxy=False)
     if result is not None:
         return result
 
-    # Son çare — proxy ile dene
+    # 4. Son çare — ücretsiz proxy ile dene
     logger.info("Direkt bağlantı engellendi, proxy deneniyor...")
     for attempt in range(2):
         result = _fetch_with_session(url, max_pages, use_proxy=True)
