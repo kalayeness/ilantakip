@@ -392,13 +392,18 @@ def parse_listings(html: str, base_url: str) -> list[dict] | None:
 
 
 def _looks_like_sahibinden(soup) -> bool:
-    """Sayfanın gerçekten sahibinden.com sayfası olup olmadığını kontrol et."""
-    # Meta, link veya script içinde sahibinden referansı
-    for tag in soup.find_all(["meta", "link", "script"], limit=30):
-        content = str(tag)
-        if "sahibinden" in content.lower():
+    """Sayfanın sahibinden.com sayfası olup olmadığını kontrol et."""
+    # HTML lang="tr" + sahibinden fontu veya referansı
+    html_tag = soup.find("html")
+    if html_tag and html_tag.get("lang") == "tr":
+        # Sayfanın herhangi bir yerinde sahibinden markası var mı
+        page_text = str(soup)[:5000].lower()
+        if any(w in page_text for w in ["sahibinden", "shbgrotesklegacy", "shb", "sahibinden.com"]):
             return True
-    # Başlık kontrolü
+    # Script/meta içinde sahibinden referansı
+    for tag in soup.find_all(["meta", "link", "script"], limit=30):
+        if "sahibinden" in str(tag).lower():
+            return True
     title = (soup.title.string or "").lower() if soup.title else ""
     return "sahibinden" in title
 
