@@ -3,6 +3,7 @@ import logging
 import time
 import random
 import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 
@@ -157,7 +158,13 @@ def _invalidate_proxy():
 
 def _make_session(use_proxy: bool = False) -> tuple:
     headers = random.choice(HEADERS_LIST)
-    session = requests.Session()
+    # cloudscraper — Cloudflare JS challenge'ı atlayan session
+    try:
+        session = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "mobile": False}
+        )
+    except Exception:
+        session = requests.Session()
     if use_proxy:
         proxy = _get_proxy()
         if proxy:
