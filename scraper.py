@@ -172,34 +172,46 @@ def _find_chrome() -> str | None:
 
 
 def _fetch_with_playwright(url: str) -> str | None:
-    """undetected-chromedriver ile gerçek Chrome kullanarak sayfayı çek — Cloudflare'ı geçer."""
+    """Selenium + Playwright Chromium ile sayfayı çek — Cloudflare'ı geçer."""
+    chrome_path = _find_chrome()
+    if not chrome_path:
+        logger.warning("Chrome/Chromium bulunamadı.")
+        return None
+
     try:
-        import undetected_chromedriver as uc
-        options = uc.ChromeOptions()
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+        from webdriver_manager.chrome import ChromeDriverManager
+
+        options = Options()
+        options.binary_location = chrome_path
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--lang=tr-TR")
         options.add_argument("--window-size=1920,1080")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
 
-        chrome_path = _find_chrome()
-        if chrome_path:
-            options.binary_location = chrome_path
-            logger.info(f"Chrome bulundu: {chrome_path}")
-        else:
-            logger.warning("Chrome bulunamadı, varsayılan kullanılacak.")
+        service = Service(ChromeDriverManager(driver_version="145").install())
+        driver = webdriver.Chrome(service=service, options=options)
 
-        driver = uc.Chrome(options=options, version_main=145)
         try:
+            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            })
             driver.get(url)
-            time.sleep(5)  # Cloudflare challenge için bekle
+            time.sleep(5)
             html = driver.page_source
-            logger.info(f"undetected-chromedriver: {len(html)} byte alındı.")
+            logger.info(f"Selenium: {len(html)} byte alındı.")
             return html
         finally:
             driver.quit()
+
     except Exception as e:
-        logger.error(f"undetected-chromedriver hatası: {e}")
+        logger.error(f"Selenium hatası: {e}")
         return None
 
 
