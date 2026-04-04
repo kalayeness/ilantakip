@@ -1,5 +1,0 @@
-# Knight Online Rogue Macro - Python gereksinimleri
-# Kurmak için: pip install -r ko_macro_requirements.txt
-
-pydirectinput>=1.0.4
-keyboard>=0.13.5
