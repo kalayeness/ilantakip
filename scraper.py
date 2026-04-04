@@ -155,63 +155,44 @@ def _invalidate_proxy():
     _proxy_fail_count += 1
 
 
-CHROME_PATHS = [
-    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    r"C:\Users\Win11\AppData\Local\Google\Chrome\Application\chrome.exe",
-    r"C:\Users\Win11\AppData\Local\ms-playwright\chromium-1208\chrome-win64\chrome.exe",
-]
-
-
-def _find_chrome() -> str | None:
-    import os
-    for p in CHROME_PATHS:
-        if os.path.exists(p):
-            return p
-    return None
+async def _fetch_with_playwright_async(url: str) -> str | None:
+    """async_playwright ile Cloudflare'ı geçerek sayfayı çek. Greenlet gerektirmez."""
+    try:
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            )
+            context = await browser.new_context(
+                user_agent=random.choice(HEADERS_LIST)["User-Agent"],
+                viewport={"width": 1920, "height": 1080},
+                locale="tr-TR",
+                timezone_id="Europe/Istanbul",
+            )
+            page = await context.new_page()
+            await page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+            await page.goto(url, wait_until="networkidle", timeout=30000)
+            import asyncio as _asyncio
+            await _asyncio.sleep(3)
+            html = await page.content()
+            await browser.close()
+            logger.info(f"Playwright async: {len(html)} byte alındı.")
+            return html
+    except Exception as e:
+        logger.error(f"Playwright async hatası: {e}")
+        return None
 
 
 def _fetch_with_playwright(url: str) -> str | None:
-    """Selenium + Playwright Chromium ile sayfayı çek — Cloudflare'ı geçer."""
-    chrome_path = _find_chrome()
-    if not chrome_path:
-        logger.warning("Chrome/Chromium bulunamadı.")
-        return None
-
+    """Thread içinden async Playwright çağrısı (greenlet yok)."""
+    import asyncio
     try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.chrome.service import Service
-        from webdriver_manager.chrome import ChromeDriverManager
-
-        options = Options()
-        options.binary_location = chrome_path
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--lang=tr-TR")
-        options.add_argument("--window-size=1920,1080")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option("useAutomationExtension", False)
-
-        service = Service(ChromeDriverManager(driver_version="145").install())
-        driver = webdriver.Chrome(service=service, options=options)
-
-        try:
-            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            })
-            driver.get(url)
-            time.sleep(5)
-            html = driver.page_source
-            logger.info(f"Selenium: {len(html)} byte alındı.")
-            return html
-        finally:
-            driver.quit()
-
+        return asyncio.run(_fetch_with_playwright_async(url))
     except Exception as e:
-        logger.error(f"Selenium hatası: {e}")
+        logger.error(f"Playwright çalıştırma hatası: {e}")
         return None
 
 
