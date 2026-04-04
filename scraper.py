@@ -3,7 +3,6 @@ import logging
 import time
 import random
 import requests
-import cloudscraper
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 
@@ -156,15 +155,39 @@ def _invalidate_proxy():
     _proxy_fail_count += 1
 
 
+def _fetch_with_playwright(url: str) -> str | None:
+    """Playwright ile gerçek Chromium tarayıcısı kullanarak sayfayı çek — Cloudflare'ı geçer."""
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            )
+            context = browser.new_context(
+                user_agent=random.choice(HEADERS_LIST)["User-Agent"],
+                viewport={"width": 1920, "height": 1080},
+                locale="tr-TR",
+                timezone_id="Europe/Istanbul",
+            )
+            page = context.new_page()
+            # Cloudflare bot tespitini azalt
+            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            # Cloudflare challenge için ekstra bekleme
+            page.wait_for_timeout(3000)
+            html = page.content()
+            browser.close()
+            logger.info(f"Playwright: {len(html)} byte alındı.")
+            return html
+    except Exception as e:
+        logger.error(f"Playwright hatası: {e}")
+        return None
+
+
 def _make_session(use_proxy: bool = False) -> tuple:
     headers = random.choice(HEADERS_LIST)
-    # cloudscraper — Cloudflare JS challenge'ı atlayan session
-    try:
-        session = cloudscraper.create_scraper(
-            browser={"browser": "chrome", "platform": "windows", "mobile": False}
-        )
-    except Exception:
-        session = requests.Session()
+    session = requests.Session()
     if use_proxy:
         proxy = _get_proxy()
         if proxy:
@@ -181,21 +204,29 @@ def fetch_listings(url: str, max_pages: int = 5) -> list[dict] | None:
         []    → sayfa açıldı ama ilan bulunamadı
         [..] → başarılı
     """
-    # Önce direkt dene
+    # Önce Playwright ile dene (Cloudflare'ı geçer)
+    logger.info(f"Playwright ile çekiliyor: {url[:60]}")
+    html = _fetch_with_playwright(url)
+    if html:
+        listings = parse_listings(html, url)
+        if listings is not None:
+            return listings
+
+    # Playwright başarısız — direkt requests dene
+    logger.info("Playwright başarısız, direkt bağlantı deneniyor...")
     result = _fetch_with_session(url, max_pages, use_proxy=False)
     if result is not None:
         return result
 
-    # Engellendi — proxy ile 3 kez dene
+    # Son çare — proxy ile dene
     logger.info("Direkt bağlantı engellendi, proxy deneniyor...")
-    for attempt in range(3):
+    for attempt in range(2):
         result = _fetch_with_session(url, max_pages, use_proxy=True)
         if result is not None:
             return result
-        logger.warning(f"Proxy denemesi {attempt + 1}/3 başarısız, yeni proxy alınıyor...")
         _invalidate_proxy()
 
-    logger.warning("Tüm proxy denemeleri başarısız.")
+    logger.warning("Tüm yöntemler başarısız.")
     return None
 
 
