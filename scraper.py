@@ -156,43 +156,83 @@ def _invalidate_proxy():
 
 
 async def _fetch_with_playwright_async(url: str) -> str | None:
-    """async_playwright ile Cloudflare'ı geçerek sayfayı çek. Greenlet gerektirmez."""
-    try:
-        from playwright.async_api import async_playwright
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-            )
-            context = await browser.new_context(
-                user_agent=random.choice(HEADERS_LIST)["User-Agent"],
-                viewport={"width": 1920, "height": 1080},
-                locale="tr-TR",
-                timezone_id="Europe/Istanbul",
-            )
-            page = await context.new_page()
-            await page.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
-            await page.goto(url, wait_until="networkidle", timeout=30000)
-            import asyncio as _asyncio
-            await _asyncio.sleep(3)
-            html = await page.content()
-            await browser.close()
-            logger.info(f"Playwright async: {len(html)} byte alındı.")
-            return html
-    except Exception as e:
-        logger.error(f"Playwright async hatası: {e}")
-        return None
+    pass  # artık kullanılmıyor
 
 
 def _fetch_with_playwright(url: str) -> str | None:
-    """Thread içinden async Playwright çağrısı (greenlet yok)."""
-    import asyncio
+    """
+    Playwright'ın bundled node.exe'si ile subprocess çağrısı.
+    Python Playwright API'si greenlet gerektiriyor — bunu bypass eder.
+    """
+    import os
+    import subprocess
+    import tempfile
+
     try:
-        return asyncio.run(_fetch_with_playwright_async(url))
+        import playwright as _pw
+        pw_dir = os.path.dirname(_pw.__file__)
+        node_exe = os.path.join(pw_dir, "driver", "node.exe")
+        pw_pkg = os.path.join(pw_dir, "driver", "package")
+
+        if not os.path.exists(node_exe):
+            logger.error(f"node.exe bulunamadı: {node_exe}")
+            return None
+
+        # JS'de path ayırıcı olarak / kullan
+        pw_pkg_js = pw_pkg.replace("\\", "/")
+
+        js = f"""
+const pw = require('{pw_pkg_js}');
+(async () => {{
+  const browser = await pw.chromium.launch({{
+    headless: true,
+    args: ['--no-sandbox', '--disable-blink-features=AutomationControlled']
+  }});
+  const ctx = await browser.newContext({{
+    locale: 'tr-TR',
+    viewport: {{ width: 1920, height: 1080 }}
+  }});
+  const page = await ctx.newPage();
+  await page.addInitScript(() => {{
+    Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined }});
+  }});
+  try {{
+    await page.goto('{url}', {{ waitUntil: 'networkidle', timeout: 30000 }});
+    await page.waitForTimeout(4000);
+    const html = await page.content();
+    process.stdout.write(html);
+  }} catch(e) {{
+    process.stderr.write(String(e));
+    process.exit(1);
+  }}
+  await browser.close();
+}})();
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".js", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(js)
+            js_file = f.name
+
+        try:
+            result = subprocess.run(
+                [node_exe, js_file],
+                capture_output=True,
+                timeout=60,
+            )
+            if result.returncode == 0 and result.stdout:
+                html = result.stdout.decode("utf-8", errors="replace")
+                logger.info(f"Playwright Node.js: {len(html)} byte alındı.")
+                return html
+            else:
+                err = result.stderr.decode("utf-8", errors="replace")[:300]
+                logger.error(f"Node.js hatası: {err}")
+                return None
+        finally:
+            os.unlink(js_file)
+
     except Exception as e:
-        logger.error(f"Playwright çalıştırma hatası: {e}")
+        logger.error(f"Playwright subprocess hatası: {e}")
         return None
 
 
