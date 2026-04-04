@@ -10,11 +10,11 @@ import re
 
 URL = "https://www.sahibinden.com/opel-astra-1.6-cdti-design?pagingSize=50&sorting=date_desc"
 
-print(f"ScraperAPI ile çekiliyor...")
+print(f"ScraperAPI ile çekiliyor (render=false)...")
 r = requests.get("http://api.scraperapi.com", params={
     "api_key": SCRAPERAPI_KEY,
     "url": URL,
-    "render": "true",
+    "render": "false",
 }, timeout=90)
 
 print(f"HTTP {r.status_code} — {len(r.text)} byte")
