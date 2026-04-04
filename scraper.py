@@ -105,30 +105,109 @@ def _is_blocked_or_error(html: str, response) -> bool:
     return False
 
 
+# Çalışan proxy önbelleği — her seferinde yeniden arama yapma
+_proxy_cache: dict | None = None
+_proxy_fail_count: int = 0
+
+
+def _get_proxy() -> dict | None:
+    """Çalışan bir proxy döndür. 3 farklı proxy dener, önbelleğe alır."""
+    global _proxy_cache, _proxy_fail_count
+
+    # Önbellekteki proxy hâlâ geçerliyse kullan
+    if _proxy_cache and _proxy_fail_count < 3:
+        return _proxy_cache
+
+    try:
+        from fp.fp import FreeProxy
+        # Farklı ülke grupları dene
+        country_groups = [
+            ["DE", "NL", "FR"],
+            ["PL", "CZ", "AT", "RO"],
+            None,  # Tüm ülkeler
+        ]
+        for countries in country_groups:
+            try:
+                kwargs = {"timeout": 2, "rand": True, "anonym": True}
+                if countries:
+                    kwargs["country_id"] = countries
+                proxy_url = FreeProxy(**kwargs).get()
+                if proxy_url:
+                    logger.info(f"Proxy bulundu: {proxy_url}")
+                    _proxy_cache = {"http": proxy_url, "https": proxy_url}
+                    _proxy_fail_count = 0
+                    return _proxy_cache
+            except Exception:
+                continue
+    except ImportError:
+        logger.warning("free-proxy kurulu değil: pip install free-proxy")
+    except Exception as e:
+        logger.debug(f"Proxy alınamadı: {e}")
+
+    _proxy_cache = None
+    return None
+
+
+def _invalidate_proxy():
+    """Mevcut proxy çalışmıyor, önbelleği temizle."""
+    global _proxy_cache, _proxy_fail_count
+    _proxy_cache = None
+    _proxy_fail_count += 1
+
+
+def _make_session(use_proxy: bool = False) -> tuple:
+    headers = random.choice(HEADERS_LIST)
+    session = requests.Session()
+    if use_proxy:
+        proxy = _get_proxy()
+        if proxy:
+            session.proxies.update(proxy)
+    return session, headers
+
+
 def fetch_listings(url: str, max_pages: int = 5) -> list[dict] | None:
     """
     Sahibinden.com'dan ilanları çek.
+    Engellenirsе free-proxy ile otomatik tekrar dener (3 proxy dener).
     Returns:
-        None  → bağlantı hatası / engellendi (bot "hata" olarak işlemeli)
+        None  → engellenemedi / bağlantı hatası
         []    → sayfa açıldı ama ilan bulunamadı
         [..] → başarılı
     """
+    # Önce direkt dene
+    result = _fetch_with_session(url, max_pages, use_proxy=False)
+    if result is not None:
+        return result
+
+    # Engellendi — proxy ile 3 kez dene
+    logger.info("Direkt bağlantı engellendi, proxy deneniyor...")
+    for attempt in range(3):
+        result = _fetch_with_session(url, max_pages, use_proxy=True)
+        if result is not None:
+            return result
+        logger.warning(f"Proxy denemesi {attempt + 1}/3 başarısız, yeni proxy alınıyor...")
+        _invalidate_proxy()
+
+    logger.warning("Tüm proxy denemeleri başarısız.")
+    return None
+
+
+def _fetch_with_session(url: str, max_pages: int, use_proxy: bool) -> list[dict] | None:
     base_url = normalize_url(url)
-    headers = random.choice(HEADERS_LIST)
     all_listings = []
 
     parsed_params = parse_qs(urlparse(url).query)
     page_size = int(parsed_params.get("pagingSize", ["20"])[0])
 
     try:
-        session = requests.Session()
-        # Ana sayfayı ziyaret et — cookie al, insan gibi görün
+        session, headers = _make_session(use_proxy=use_proxy)
+
         try:
             r0 = session.get(SAHIBINDEN_BASE, headers=headers, timeout=15)
             logger.debug(f"Ana sayfa: status={r0.status_code}, {len(r0.text)} byte")
         except Exception as e:
             logger.debug(f"Ana sayfa alınamadı: {e}")
-        time.sleep(random.uniform(3, 6))  # Daha uzun bekleme
+        time.sleep(random.uniform(3, 6))
 
         for page in range(max_pages):
             offset = page * page_size
@@ -144,10 +223,12 @@ def fetch_listings(url: str, max_pages: int = 5) -> list[dict] | None:
                 return None
 
             if _is_blocked_or_error(response.text, response):
-                logger.warning(f"Sayfa {page + 1}: Engellendi veya hata (status={response.status_code}).")
+                logger.warning(f"Sayfa {page + 1}: Engellendi (status={response.status_code}).")
+                if use_proxy:
+                    _invalidate_proxy()  # Bu proxy çalışmıyor, bir sonrakini dene
                 if page == 0:
-                    return None  # İlk sayfa engellenirse hata döndür
-                break  # Sonraki sayfalarda engellenirse dur, eldekilerle devam et
+                    return None
+                break
 
             page_listings = parse_listings(response.text, page_url)
 
