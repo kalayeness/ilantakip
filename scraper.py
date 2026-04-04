@@ -417,6 +417,34 @@ def _fetch_with_session(url: str, max_pages: int, use_proxy: bool) -> list[dict]
         return None
 
 
+def _is_bot_protection(html: str, soup) -> bool:
+    """Sahibinden veya Cloudflare bot engel sayfası mı kontrol et."""
+    # Küçük sayfa — gerçek liste sayfaları en az 50KB olur
+    if len(html) < 20000:
+        # Sahibinden'in kendi bot koruma mesajları
+        lower = html.lower()
+        if any(phrase in lower for phrase in [
+            "olağandışı",
+            "unusual activity",
+            "just a moment",
+            "destek kodu",
+            "robot",
+            "captcha",
+            "bot detection",
+            "cf-browser-verification",
+            "challenge-platform",
+        ]):
+            logger.warning(f"Bot engel sayfası tespit edildi ({len(html)} byte).")
+            return True
+        # 12-15KB arası sabit boyut — sahibinden'in standart engel sayfası
+        if 10000 < len(html) < 16000:
+            # Gerçek ilan sayfasında searchResults veya classified-list olur
+            if not soup.find(class_=re.compile(r"searchResult|classified|listing", re.I)):
+                logger.warning(f"Engel sayfası boyutu ({len(html)} byte) — ilan yapısı yok.")
+                return True
+    return False
+
+
 def parse_listings(html: str, base_url: str) -> list[dict] | None:
     """
     HTML'den ilan listesini parse et.
@@ -426,6 +454,10 @@ def parse_listings(html: str, base_url: str) -> list[dict] | None:
         [..] → ilanlar
     """
     soup = BeautifulSoup(html, "html.parser")
+
+    # --- Bot engel sayfası kontrolü ---
+    if _is_bot_protection(html, soup):
+        return None
 
     # --- Yöntem 1: Standart arama sonuçları tablosu ---
     table = (
