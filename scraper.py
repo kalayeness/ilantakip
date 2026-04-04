@@ -155,6 +155,22 @@ def _invalidate_proxy():
     _proxy_fail_count += 1
 
 
+CHROME_PATHS = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    r"C:\Users\Win11\AppData\Local\Google\Chrome\Application\chrome.exe",
+    r"C:\Users\Win11\AppData\Local\ms-playwright\chromium-1208\chrome-win64\chrome.exe",
+]
+
+
+def _find_chrome() -> str | None:
+    import os
+    for p in CHROME_PATHS:
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def _fetch_with_playwright(url: str) -> str | None:
     """undetected-chromedriver ile gerçek Chrome kullanarak sayfayı çek — Cloudflare'ı geçer."""
     try:
@@ -166,7 +182,14 @@ def _fetch_with_playwright(url: str) -> str | None:
         options.add_argument("--lang=tr-TR")
         options.add_argument("--window-size=1920,1080")
 
-        driver = uc.Chrome(options=options, version_main=None)
+        chrome_path = _find_chrome()
+        if chrome_path:
+            options.binary_location = chrome_path
+            logger.info(f"Chrome bulundu: {chrome_path}")
+        else:
+            logger.warning("Chrome bulunamadı, varsayılan kullanılacak.")
+
+        driver = uc.Chrome(options=options, version_main=145)
         try:
             driver.get(url)
             time.sleep(5)  # Cloudflare challenge için bekle
