@@ -243,53 +243,79 @@ const pw = require('{pw_pkg_js}');
         return None
 
 
+def _scraperapi_request(url: str, premium: bool = False, render: bool = True) -> str | None:
+    """Tek bir ScraperAPI isteği. premium=True residential proxy kullanır."""
+    key = _SCRAPERAPI_KEY
+    if not key:
+        return None
+
+    params = {
+        "api_key": key,
+        "url": url,
+        "render": "true" if render else "false",
+        "country_code": "tr",
+    }
+    if premium:
+        params["premium"] = "true"
+
+    try:
+        response = requests.get("http://api.scraperapi.com", params=params, timeout=90)
+        if response.status_code == 200 and len(response.text) > 2000:
+            return response.text
+        elif response.status_code == 429:
+            logger.warning("ScraperAPI kota doldu (429).")
+        else:
+            logger.warning(f"ScraperAPI HTTP {response.status_code} ({len(response.text)} byte).")
+        return None
+    except requests.exceptions.Timeout:
+        logger.error("ScraperAPI zaman aşımı.")
+        return None
+    except Exception as e:
+        logger.error(f"ScraperAPI hatası: {e}")
+        return None
+
+
 def _fetch_with_scraperapi(url: str) -> str | None:
     """
     ScraperAPI üzerinden sayfayı çek.
-    Rotating residential proxy + JS render ile sahibinden IP engeli ve Cloudflare'ı aşar.
-    Ücretsiz plan: 1000 istek/ay. render=true her istek 5 kredi sayılır (200 sayfa/ay).
+    Önce standart (datacenter) dener, engel sayfası gelirse premium (residential) ile tekrar dener.
+
+    Kredi maliyeti (ücretsiz plan 1000 kr/ay):
+      - Standart + render : 5 kr
+      - Premium + render  : 25 kr  ← sahibinden için gerekli
     """
     key = _SCRAPERAPI_KEY
     if not key:
         return None
 
-    api_url = "http://api.scraperapi.com"
-    params = {
-        "api_key": key,
-        "url": url,
-        "render": "true",        # JS yüklemesi için
-        "country_code": "tr",    # Türkiye IP'si — sahibinden için daha iyi
-        "keep_headers": "false",
-    }
+    def _looks_blocked(h: str) -> bool:
+        if len(h) >= 50000:
+            return False  # Büyük sayfa — gerçek içerik
+        low = h.lower()
+        return any(w in low for w in [
+            "olağandışı", "unusual activity", "just a moment",
+            "destek kodu", "captcha", "challenge-platform",
+        ]) or (10000 < len(h) < 16000)
 
-    try:
-        logger.info(f"ScraperAPI ile çekiliyor: {url[:60]}")
-        response = requests.get(api_url, params=params, timeout=70)
+    # 1. Önce standart datacenter proxy ile dene (hızlı, ucuz)
+    logger.info(f"ScraperAPI (standart) ile çekiliyor: {url[:60]}")
+    html = _scraperapi_request(url, premium=False, render=True)
+    if html and not _looks_blocked(html):
+        logger.info(f"ScraperAPI standart başarılı: {len(html)} byte.")
+        return html
+    if html:
+        logger.warning("ScraperAPI standart: bot engel sayfası — premium deneniyor.")
 
-        if response.status_code == 200:
-            html = response.text
-            if len(html) > 2000:
-                logger.info(f"ScraperAPI başarılı: {len(html)} byte alındı.")
-                return html
-            else:
-                logger.warning(f"ScraperAPI çok kısa yanıt ({len(html)} byte).")
-                return None
-        elif response.status_code == 429:
-            logger.warning("ScraperAPI kota doldu (429).")
-            return None
-        elif response.status_code == 403:
-            logger.warning("ScraperAPI 403 — hedef site hâlâ engelledi.")
-            return None
-        else:
-            logger.warning(f"ScraperAPI beklenmedik durum: {response.status_code}")
-            return None
+    # 2. Residential proxy (premium) — sahibinden IP banını aşar
+    logger.info(f"ScraperAPI (premium/residential) ile çekiliyor: {url[:60]}")
+    html = _scraperapi_request(url, premium=True, render=True)
+    if html and not _looks_blocked(html):
+        logger.info(f"ScraperAPI premium başarılı: {len(html)} byte.")
+        return html
+    if html:
+        logger.warning("ScraperAPI premium: hâlâ bot engel sayfası.")
 
-    except requests.exceptions.Timeout:
-        logger.error("ScraperAPI zaman aşımı (70s).")
-        return None
-    except Exception as e:
-        logger.error(f"ScraperAPI hatası: {e}")
-        return None
+    return None
 
 
 def _make_session(use_proxy: bool = False) -> tuple:
