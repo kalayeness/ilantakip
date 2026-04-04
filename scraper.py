@@ -253,10 +253,9 @@ def _scraperapi_request(url: str, premium: bool = False, render: bool = True) ->
         "api_key": key,
         "url": url,
         "render": "true" if render else "false",
-        "country_code": "tr",
     }
     if premium:
-        params["premium"] = "true"
+        params["ultra_premium"] = "true"  # residential proxy
 
     try:
         response = requests.get("http://api.scraperapi.com", params=params, timeout=90)
@@ -265,7 +264,7 @@ def _scraperapi_request(url: str, premium: bool = False, render: bool = True) ->
         elif response.status_code == 429:
             logger.warning("ScraperAPI kota doldu (429).")
         else:
-            logger.warning(f"ScraperAPI HTTP {response.status_code} ({len(response.text)} byte).")
+            logger.warning(f"ScraperAPI HTTP {response.status_code} ({len(response.text)} byte): {response.text[:200]}")
         return None
     except requests.exceptions.Timeout:
         logger.error("ScraperAPI zaman aşımı.")
